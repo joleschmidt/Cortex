@@ -6,6 +6,8 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var processingQueue: [SavedContent] = []
     @State private var recentSummaries: [SummaryWithContent] = []
+    @State private var errorMessage: String?
+    @State private var isLoading = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -54,18 +56,38 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Main content
-                TabView {
-                    // Processing Queue
-                    ProcessingQueueView(queue: $processingQueue)
+                VStack(spacing: 0) {
+                    if let error = errorMessage {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text(error)
+                                .font(.caption)
+                            Spacer()
+                            Button("Dismiss") {
+                                errorMessage = nil
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(8)
+                        .background(Color.orange.opacity(0.1))
+                    }
+                    
+                    TabView {
+                        // Processing Queue
+                        ProcessingQueueView(queue: $processingQueue, isLoading: $isLoading) {
+                            loadData()
+                        }
                         .tabItem {
                             Label("Queue", systemImage: "list.bullet")
                         }
-                    
-                    // Recent Summaries
-                    RecentSummariesView(summaries: $recentSummaries)
+                        
+                        // Recent Summaries
+                        RecentSummariesView(summaries: $recentSummaries)
                         .tabItem {
                             Label("Summaries", systemImage: "doc.text")
                         }
+                    }
                 }
                 .frame(minWidth: 600, minHeight: 400)
             }
@@ -93,13 +115,25 @@ struct ContentView: View {
     }
     
     private func refreshProcessingQueue() async {
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
         do {
             let items = try await supabaseManager.fetchUnprocessedContent()
             await MainActor.run {
                 processingQueue = items
+                isLoading = false
+                print("✅ Loaded \(items.count) items from queue")
             }
         } catch {
-            print("Error loading queue: \(error)")
+            await MainActor.run {
+                isLoading = false
+                let errorDesc = error.localizedDescription
+                errorMessage = "Error loading queue: \(errorDesc)"
+                print("❌ Error loading queue: \(error)")
+            }
         }
     }
     
@@ -123,8 +157,7 @@ struct ContentView: View {
                 return
             }
             
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
+            let decoder = SupabaseManager.createSupabaseDateDecoder()
             
             struct SummaryResponse: Codable {
                 let id: UUID
@@ -170,24 +203,50 @@ struct ContentView: View {
 
 struct ProcessingQueueView: View {
     @Binding var queue: [SavedContent]
+    @Binding var isLoading: Bool
+    let onRefresh: () -> Void
     
     var body: some View {
-        List {
-            if queue.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 48))
-                        .foregroundColor(.green)
-                    Text("No items in queue")
-                        .font(.headline)
-                    Text("All content has been processed!")
-                        .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            HStack {
+                Text("Processing Queue")
+                    .font(.headline)
+                Spacer()
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding()
-            } else {
-                ForEach(queue) { item in
-                    QueueItemRow(item: item)
+                .buttonStyle(.borderless)
+                .disabled(isLoading)
+            }
+            .padding()
+            
+            Divider()
+            
+            List {
+                if isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .padding()
+                        Spacer()
+                    }
+                } else if queue.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 48))
+                            .foregroundColor(.green)
+                        Text("No items in queue")
+                            .font(.headline)
+                        Text("All content has been processed!")
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding()
+                } else {
+                    ForEach(queue) { item in
+                        QueueItemRow(item: item)
+                    }
                 }
             }
         }

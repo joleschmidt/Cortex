@@ -64,13 +64,66 @@ class SupabaseManager: ObservableObject {
         isPolling = false
     }
     
+    // MARK: - Date Decoding Helper
+    static func createSupabaseDateDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        // Custom date formatter for Supabase ISO8601 dates (handles microseconds)
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        
+        // Try multiple ISO8601 formats
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            
+            // Try formats in order of likelihood
+            let formats = [
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZZZZZ",  // With microseconds and timezone
+                "yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ",     // With milliseconds and timezone
+                "yyyy-MM-dd'T'HH:mm:ssZZZZZ",          // Without fractional seconds
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'",     // With microseconds, UTC
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",        // With milliseconds, UTC
+                "yyyy-MM-dd'T'HH:mm:ss'Z'"             // Without fractional seconds, UTC
+            ]
+            
+            for format in formats {
+                dateFormatter.dateFormat = format
+                if let date = dateFormatter.date(from: dateString) {
+                    return date
+                }
+            }
+            
+            // Fallback to ISO8601DateFormatter
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = isoFormatter.date(from: dateString) {
+                return date
+            }
+            
+            // Last resort: try without fractional seconds
+            isoFormatter.formatOptions = [.withInternetDateTime]
+            if let date = isoFormatter.date(from: dateString) {
+                return date
+            }
+            
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid date format: \(dateString)"
+            )
+        }
+        return decoder
+    }
+    
     // MARK: - API Methods
     func fetchUnprocessedContent() async throws -> [SavedContent] {
         guard let url = supabaseUrl, let key = supabaseKey else {
+            print("❌ Supabase not configured - URL: \(supabaseUrl ?? "nil"), Key: \(supabaseKey != nil ? "set" : "nil")")
             throw SupabaseError.notConfigured
         }
         
         let endpoint = "\(url)/rest/v1/saved_content?status=eq.pending&order=created_at.asc&limit=10"
+        print("🔍 Fetching from: \(endpoint)")
         
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "GET"
@@ -81,16 +134,34 @@ class SupabaseManager: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ Invalid response type")
             throw SupabaseError.invalidResponse
         }
         
+        print("📡 Response status: \(httpResponse.statusCode)")
+        
         if httpResponse.statusCode == 200 {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let items = try decoder.decode([SavedContent].self, from: data)
-            return items
+            // Log raw JSON for debugging
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON response: \(jsonString.prefix(500))")
+            }
+            
+            let decoder = Self.createSupabaseDateDecoder()
+            
+            do {
+                let items = try decoder.decode([SavedContent].self, from: data)
+                print("✅ Decoded \(items.count) items")
+                return items
+            } catch {
+                print("❌ Decoding error: \(error)")
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 Full JSON: \(jsonString.prefix(2000))")
+                }
+                throw error
+            }
         } else {
             let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            print("❌ API Error \(httpResponse.statusCode): \(errorMessage)")
             throw SupabaseError.apiError(httpResponse.statusCode, errorMessage)
         }
     }

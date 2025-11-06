@@ -5,6 +5,7 @@ QUICK_CONFIG.md
 .cortex_config
 *.key
 *.secret
+*.KEYS
 
 # macOS
 .DS_Store

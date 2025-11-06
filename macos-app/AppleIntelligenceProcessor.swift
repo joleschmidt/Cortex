@@ -34,7 +34,11 @@ class AppleIntelligenceProcessor {
         let processedText = text.count > maxLength ? String(text.prefix(maxLength)) : text
         
         if isAvailable {
-            return try await generateWithAppleIntelligence(text: processedText)
+            if #available(macOS 15.0, *) {
+                return try await generateWithAppleIntelligence(text: processedText)
+            } else {
+                return try generateFallbackSummaries(text: processedText)
+            }
         } else {
             return try generateFallbackSummaries(text: processedText)
         }

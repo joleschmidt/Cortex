@@ -6,7 +6,7 @@ struct CortexApp: App {
     @StateObject private var appState = AppState()
     
     var body: some Scene {
-        WindowGroup {
+        let windowGroup = WindowGroup {
             ContentView()
                 .environmentObject(supabaseManager)
                 .environmentObject(appState)
@@ -17,7 +17,12 @@ struct CortexApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
+        
+        if #available(macOS 13.0, *) {
+            return windowGroup.windowResizability(.contentSize)
+        } else {
+            return windowGroup
+        }
     }
 }
 

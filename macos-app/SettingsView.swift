@@ -68,7 +68,7 @@ struct SettingsView: View {
                     .padding(.vertical, 8)
                 }
             }
-            .formStyle(.grouped)
+            .modifier(FormStyleModifier())
             .padding()
             
             // Save button
@@ -149,6 +149,17 @@ struct SettingsView: View {
             try? plistData?.write(to: plistPath)
         } else {
             try? FileManager.default.removeItem(at: plistPath)
+        }
+    }
+}
+
+// Helper to conditionally apply formStyle for macOS 13.0+
+struct FormStyleModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 13.0, *) {
+            content.formStyle(.grouped)
+        } else {
+            content
         }
     }
 }

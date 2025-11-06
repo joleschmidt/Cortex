@@ -25,6 +25,47 @@ struct SavedContent: Codable, Identifiable {
         case processedAt = "processed_at"
         case status
     }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        id = try container.decode(UUID.self, forKey: .id)
+        url = try container.decode(String.self, forKey: .url)
+        title = try container.decode(String.self, forKey: .title)
+        contentText = try container.decode(String.self, forKey: .contentText)
+        contentMarkdown = try container.decodeIfPresent(String.self, forKey: .contentMarkdown)
+        
+        // Handle metadata - can be null, object, or missing
+        if container.contains(.metadata) {
+            if let metadataDict = try? container.decode([String: AnyCodable].self, forKey: .metadata) {
+                metadata = metadataDict
+            } else {
+                metadata = nil
+            }
+        } else {
+            metadata = nil
+        }
+        
+        videoId = try container.decodeIfPresent(String.self, forKey: .videoId)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        processedAt = try container.decodeIfPresent(Date.self, forKey: .processedAt)
+        status = try container.decode(ProcessingStatus.self, forKey: .status)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        
+        try container.encode(id, forKey: .id)
+        try container.encode(url, forKey: .url)
+        try container.encode(title, forKey: .title)
+        try container.encode(contentText, forKey: .contentText)
+        try container.encodeIfPresent(contentMarkdown, forKey: .contentMarkdown)
+        try container.encodeIfPresent(metadata, forKey: .metadata)
+        try container.encodeIfPresent(videoId, forKey: .videoId)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(processedAt, forKey: .processedAt)
+        try container.encode(status, forKey: .status)
+    }
 }
 
 // MARK: - Summary
