@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cortex</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Cortex</h1>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+    </header>
+
+    <div id="mainView">
+      <button id="saveBtn" class="save-button">Save Current Page</button>
+      
+      <div id="statusMessage" class="status-message"></div>
+
+      <div id="savedItems" class="saved-items">
+        <div class="loading">Loading...</div>
+      </div>
+    </div>
+
+    <div id="settingsView" class="settings-view hidden">
+      <h2>Settings</h2>
+      
+      <div class="form-group">
+        <label for="supabaseUrl">Supabase URL</label>
+        <input type="text" id="supabaseUrl" placeholder="https://your-project.supabase.co">
+      </div>
+
+      <div class="form-group">
+        <label for="supabaseKey">Supabase Anon Key</label>
+        <input type="password" id="supabaseKey" placeholder="Your anon key">
+      </div>
+
+      <div class="form-group">
+        <label for="youtubeApiKey">YouTube API Key (optional)</label>
+        <input type="password" id="youtubeApiKey" placeholder="Your YouTube Data API v3 key">
+        <small>Required for YouTube transcript extraction</small>
+      </div>
+
+      <div class="button-group">
+        <button id="saveSettingsBtn" class="save-button">Save Settings</button>
+        <button id="cancelSettingsBtn" class="cancel-button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../lib/supabase-client.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
+

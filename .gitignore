@@ -1,0 +1,45 @@
+# Sensitive Configuration
+KEYS.md
+SUPABASE_CONFIG.md
+QUICK_CONFIG.md
+.cortex_config
+*.key
+*.secret
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+DerivedData/
+build/
+
+# Chrome Extension
+*.crx
+*.pem
+*.zip
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
