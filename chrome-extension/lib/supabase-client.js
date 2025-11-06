@@ -122,6 +122,5 @@ class SupabaseClient {
   }
 }
 
-// Export singleton instance
-const supabaseClient = new SupabaseClient();
+// Note: Create instance in popup.js to avoid conflicts
 

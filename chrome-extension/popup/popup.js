@@ -1,19 +1,65 @@
 // Popup script for Chrome extension
 
-const supabaseClient = new SupabaseClient();
-
+let supabaseClient = null;
 let currentView = 'main';
+
+// Initialize SupabaseClient after DOM is ready
+function initSupabaseClient() {
+  if (typeof SupabaseClient !== 'undefined') {
+    supabaseClient = new SupabaseClient();
+    console.log('SupabaseClient initialized');
+  } else {
+    console.error('SupabaseClient class not loaded! Check if supabase-client.js is loaded.');
+  }
+}
 
 // Initialize popup
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadSettings();
-  await loadSavedItems();
+  // Initialize SupabaseClient first
+  initSupabaseClient();
+  
+  try {
+    await loadSettings();
+    if (supabaseClient) {
+      await loadSavedItems();
+    } else {
+      console.warn('SupabaseClient not available, skipping loadSavedItems');
+    }
+  } catch (error) {
+    console.error('Error initializing popup:', error);
+    // Show error to user
+    const container = document.getElementById('savedItems');
+    if (container) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <p>Error loading: ${error.message}</p>
+          <p>Check console for details.</p>
+        </div>
+      `;
+    }
+  }
   
   // Set up event listeners
-  document.getElementById('saveBtn').addEventListener('click', handleSaveCurrentPage);
-  document.getElementById('settingsBtn').addEventListener('click', showSettings);
-  document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
-  document.getElementById('cancelSettingsBtn').addEventListener('click', showMain);
+  const saveBtn = document.getElementById('saveBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+  const cancelSettingsBtn = document.getElementById('cancelSettingsBtn');
+  
+  if (saveBtn) {
+    saveBtn.addEventListener('click', handleSaveCurrentPage);
+  }
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', showSettings);
+    console.log('Settings button listener attached');
+  } else {
+    console.error('Settings button not found!');
+  }
+  if (saveSettingsBtn) {
+    saveSettingsBtn.addEventListener('click', saveSettings);
+  }
+  if (cancelSettingsBtn) {
+    cancelSettingsBtn.addEventListener('click', showMain);
+  }
 });
 
 async function loadSettings() {
@@ -62,9 +108,23 @@ async function saveSettings() {
 }
 
 function showSettings() {
-  currentView = 'settings';
-  document.getElementById('mainView').classList.add('hidden');
-  document.getElementById('settingsView').classList.remove('hidden');
+  console.log('showSettings called');
+  try {
+    currentView = 'settings';
+    const mainView = document.getElementById('mainView');
+    const settingsView = document.getElementById('settingsView');
+    
+    if (!mainView || !settingsView) {
+      console.error('Views not found!', { mainView, settingsView });
+      return;
+    }
+    
+    mainView.classList.add('hidden');
+    settingsView.classList.remove('hidden');
+    console.log('Settings view shown');
+  } catch (error) {
+    console.error('Error showing settings:', error);
+  }
 }
 
 function showMain() {
@@ -99,12 +159,42 @@ async function handleSaveCurrentPage() {
       throw new Error('Could not get current tab');
     }
 
+    // Check if content script can be injected on this page
+    const url = new URL(tab.url);
+    if (url.protocol === 'chrome:' || url.protocol === 'chrome-extension:' || url.protocol === 'about:') {
+      throw new Error('Cannot save content from this type of page. Please navigate to a regular website.');
+    }
+
+    // Try to inject content script if not already loaded
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/content.js']
+      });
+      // Wait a bit for script to initialize
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } catch (injectError) {
+      console.warn('Could not inject content script:', injectError);
+      // Continue anyway - might already be loaded
+    }
+
     // Check if it's a YouTube video
     const isYouTube = tab.url.includes('youtube.com/watch') || tab.url.includes('youtu.be/');
     
     if (isYouTube) {
       // Extract YouTube content
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractYouTube' });
+      let response;
+      try {
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'extractYouTube' });
+      } catch (msgError) {
+        // If message fails, try injecting script and retry
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content.js']
+        });
+        await new Promise(resolve => setTimeout(resolve, 200));
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'extractYouTube' });
+      }
       
       if (!response || !response.success) {
         throw new Error(response?.error || 'Failed to extract YouTube content');
@@ -123,7 +213,18 @@ async function handleSaveCurrentPage() {
       showStatus('YouTube video saved successfully!', 'success');
     } else {
       // Extract regular page content
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractContent' });
+      let response;
+      try {
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'extractContent' });
+      } catch (msgError) {
+        // If message fails, try injecting script and retry
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/content.js']
+        });
+        await new Promise(resolve => setTimeout(resolve, 200));
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'extractContent' });
+      }
       
       if (!response || !response.success) {
         throw new Error(response?.error || 'Failed to extract page content');
@@ -148,7 +249,16 @@ async function handleSaveCurrentPage() {
     }, 500);
   } catch (error) {
     console.error('Error saving page:', error);
-    showStatus(error.message || 'Failed to save page', 'error');
+    let errorMsg = error.message || 'Failed to save page';
+    
+    // Provide more helpful error messages
+    if (errorMsg.includes('Receiving end does not exist')) {
+      errorMsg = 'Content script not loaded. Please refresh the page and try again.';
+    } else if (errorMsg.includes('Cannot access')) {
+      errorMsg = 'Cannot access this page. Please navigate to a regular website.';
+    }
+    
+    showStatus(errorMsg, 'error');
   } finally {
     saveBtn.disabled = false;
     saveBtn.textContent = 'Save Current Page';
@@ -160,6 +270,9 @@ async function loadSavedItems() {
   container.innerHTML = '<div class="loading">Loading...</div>';
 
   try {
+    if (!supabaseClient) {
+      throw new Error('SupabaseClient not initialized');
+    }
     await supabaseClient.init();
     const items = await supabaseClient.getRecentContent(20);
     
