@@ -10,6 +10,8 @@ struct ProcessingResult {
     let summaries: Summaries
     let contentType: ContentType
     let extractedData: ExtractedData
+    let keyPoints: [String]?
+    let reviews: [String]?
 }
 
 class AppleIntelligenceProcessor {
@@ -85,14 +87,16 @@ class AppleIntelligenceProcessor {
             scoredSentences: scoredSentences
         )
         
-        // Update ExtractedData with comprehensive keyPoints
+        // Extract reviews separately (not part of ExtractedData)
+        let reviews = extractReviews(text: processedText)
+        
+        // Update ExtractedData with comprehensive keyPoints (but not reviews)
         if !comprehensiveKeyPoints.isEmpty {
             extractedData = ExtractedData(
                 type: extractedData.type,
                 structuredData: extractedData.structuredData,
                 keyPoints: comprehensiveKeyPoints,
                 actionableInsights: extractedData.actionableInsights,
-                reviews: extractedData.reviews,
                 metadata: extractedData.metadata
             )
         }
@@ -100,7 +104,9 @@ class AppleIntelligenceProcessor {
         return ProcessingResult(
             summaries: summaries,
             contentType: contentType,
-            extractedData: extractedData
+            extractedData: extractedData,
+            keyPoints: comprehensiveKeyPoints.isEmpty ? nil : comprehensiveKeyPoints,
+            reviews: reviews.isEmpty ? nil : reviews
         )
     }
     
@@ -235,12 +241,13 @@ class AppleIntelligenceProcessor {
             extractedMetadata = metadata
         }
         
+        // Note: reviews are extracted but not stored in ExtractedData
+        // They will be stored separately in the Summary
         return ExtractedData(
             type: contentType.rawValue,
             structuredData: structuredData.isEmpty ? nil : structuredData,
             keyPoints: keyPoints.isEmpty ? nil : keyPoints,
             actionableInsights: actionableInsights.isEmpty ? nil : actionableInsights,
-            reviews: reviews.isEmpty ? nil : reviews,
             metadata: extractedMetadata.isEmpty ? nil : extractedMetadata
         )
     }
@@ -925,15 +932,147 @@ class AppleIntelligenceProcessor {
         return Array(keyPoints.prefix(10))
     }
     
+    private func extractMainProductPrice(text: String) -> String? {
+        // Find all prices in the text with their context
+        let pricePattern = #"[\$€£¥]\s*[\d.,]+\.?\d*"#
+        let regex = try? NSRegularExpression(pattern: pricePattern, options: [])
+        let nsText = text as NSString
+        let matches = regex?.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length)) ?? []
+        
+        struct PriceCandidate {
+            let price: String
+            let value: Double
+            let context: String
+            let score: Double
+        }
+        
+        var candidates: [PriceCandidate] = []
+        
+        for match in matches {
+            let priceRange = match.range
+            let priceString = nsText.substring(with: priceRange)
+            
+            // Extract numeric value (handle both European comma and US period formats)
+            var numericString = priceString
+                .replacingOccurrences(of: "[€$£¥\\s]", with: "", options: .regularExpression)
+            
+            // Handle European format (comma as decimal, period as thousands)
+            if numericString.contains(",") && numericString.contains(".") {
+                // Period is thousands separator, comma is decimal
+                numericString = numericString.replacingOccurrences(of: ".", with: "")
+                numericString = numericString.replacingOccurrences(of: ",", with: ".")
+            } else if numericString.contains(",") && !numericString.contains(".") {
+                // Only comma - could be decimal or thousands separator
+                // If there are 3+ digits after comma, it's likely thousands separator
+                let parts = numericString.components(separatedBy: ",")
+                if parts.count == 2 && parts[1].count >= 3 {
+                    // Thousands separator
+                    numericString = numericString.replacingOccurrences(of: ",", with: "")
+                } else {
+                    // Decimal separator
+                    numericString = numericString.replacingOccurrences(of: ",", with: ".")
+                }
+            } else if numericString.contains(".") && !numericString.contains(",") {
+                // Only period - could be decimal or thousands separator
+                let parts = numericString.components(separatedBy: ".")
+                if parts.count == 2 && parts[1].count >= 3 {
+                    // Likely thousands separator (e.g., 1.500 = 1500)
+                    numericString = numericString.replacingOccurrences(of: ".", with: "")
+                }
+                // Otherwise treat as decimal (US format)
+            }
+            
+            guard let value = Double(numericString) else { continue }
+            
+            // Get context (50 chars before and after)
+            let contextStart = max(0, priceRange.location - 50)
+            let contextLength = min(100, nsText.length - contextStart)
+            let context = nsText.substring(with: NSRange(location: contextStart, length: contextLength)).lowercased()
+            
+            // Skip if it's clearly a shipping/delivery cost
+            let shippingKeywords = [
+                "versand", "shipping", "lieferung", "delivery", "zustellung",
+                "schnelle lieferung", "fast delivery", "standardlieferung", "standard delivery",
+                "express", "expresslieferung", "express delivery"
+            ]
+            if shippingKeywords.contains(where: { context.contains($0) }) {
+                continue
+            }
+            
+            // Skip if it's a discount percentage or small amount (likely shipping)
+            if context.contains("-") && context.contains("%") {
+                continue
+            }
+            if value < 20 && (context.contains("versand") || context.contains("shipping") || context.contains("lieferung")) {
+                continue
+            }
+            
+            // Score the price based on context
+            var score: Double = 0.0
+            
+            // High priority: explicit price labels
+            if context.contains("preis:") || context.contains("price:") ||
+               context.contains("uvp") || context.contains("msrp") ||
+               context.contains("ab") || context.contains("from") {
+                score += 10.0
+            }
+            
+            // Medium priority: near product-related terms
+            if context.contains("produkt") || context.contains("product") ||
+               context.contains("artikel") || context.contains("item") {
+                score += 5.0
+            }
+            
+            // Bonus for larger prices (likely main product price)
+            if value > 50 {
+                score += 3.0
+            }
+            if value > 100 {
+                score += 2.0
+            }
+            if value > 500 {
+                score += 1.0
+            }
+            
+            // Penalty for very small prices (likely shipping)
+            if value < 10 {
+                score -= 5.0
+            }
+            
+            // Penalty if near discount/sale keywords
+            if context.contains("rabatt") || context.contains("discount") ||
+               context.contains("reduziert") || context.contains("reduced") ||
+               context.contains("sonderpreis") || context.contains("special price") {
+                score -= 3.0
+            }
+            
+            candidates.append(PriceCandidate(price: priceString.trimmingCharacters(in: .whitespaces), value: value, context: context, score: score))
+        }
+        
+        // Sort by score (highest first) and return the best match
+        let sortedCandidates = candidates.sorted { $0.score > $1.score }
+        
+        // Return the highest scoring price, but only if it has a reasonable score
+        if let best = sortedCandidates.first, best.score > 0 {
+            return best.price
+        }
+        
+        // Fallback: return the largest price that's not clearly shipping
+        let nonShippingCandidates = candidates.filter { $0.value >= 20 && $0.score >= -2 }
+        if let largest = nonShippingCandidates.max(by: { $0.value < $1.value }) {
+            return largest.price
+        }
+        
+        return nil
+    }
+    
     private func extractProductKeyPoints(text: String, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
         var points: [String] = []
         let lowerText = text.lowercased()
         
-        // Extract price (including German format with comma)
-        let pricePattern = #"[\$€£¥]\s*[\d.,]+\s*[\d]*"#
-        if let priceRange = text.range(of: pricePattern, options: .regularExpression) {
-            let price = String(text[priceRange]).trimmingCharacters(in: .whitespaces)
-            points.append("Price: \(price)")
+        // Smart price extraction - find the main product price, not shipping costs
+        if let mainPrice = extractMainProductPrice(text: text) {
+            points.append("Price: \(mainPrice)")
         }
         
         // Extract availability (German and English)

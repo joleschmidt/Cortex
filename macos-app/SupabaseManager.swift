@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 
+
 class SupabaseManager: ObservableObject {
     @Published var isConfigured: Bool = false
     @Published var lastError: String?
@@ -304,7 +305,7 @@ class SupabaseManager: ObservableObject {
         }
     }
     
-    func updateContentWithSummary(contentId: UUID, shortSummary: String, detailedSummary: String, extractedData: ExtractedData) async throws {
+    func updateContentWithSummary(contentId: UUID, shortSummary: String, detailedSummary: String, extractedData: ExtractedData, keyPoints: [String]? = nil, reviews: [String]? = nil) async throws {
         guard let url = supabaseUrl, let key = supabaseKey else {
             throw SupabaseError.notConfigured
         }
@@ -334,13 +335,17 @@ class SupabaseManager: ObservableObject {
         ]
         
         // Add key_points as separate column if present
-        if let keyPoints = extractedData.keyPoints, !keyPoints.isEmpty {
+        if let keyPoints = keyPoints, !keyPoints.isEmpty {
+            summaryPayload["key_points"] = keyPoints
+            print("   Key points count: \(keyPoints.count)")
+        } else if let keyPoints = extractedData.keyPoints, !keyPoints.isEmpty {
+            // Fallback to extractedData if not provided separately
             summaryPayload["key_points"] = keyPoints
             print("   Key points count: \(keyPoints.count)")
         }
         
         // Add reviews as separate column if present
-        if let reviews = extractedData.reviews, !reviews.isEmpty {
+        if let reviews = reviews, !reviews.isEmpty {
             summaryPayload["reviews"] = reviews
             print("   Reviews count: \(reviews.count)")
         }
@@ -469,7 +474,9 @@ class SupabaseManager: ObservableObject {
                     contentId: item.id,
                     shortSummary: result.summaries.short,
                     detailedSummary: result.summaries.detailed,
-                    extractedData: result.extractedData
+                    extractedData: result.extractedData,
+                    keyPoints: result.keyPoints,
+                    reviews: result.reviews
                 )
                 print("✅ Summary saved for: \(item.title)")
                 

@@ -69,39 +69,23 @@ struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var showSettings = false
     @State private var selectedCategory: SelectedCategory = .all
-    @State private var selectedCustomCategoryId: UUID? = nil
     @State private var processingQueue: [SavedContent] = []
     @State private var allSummaries: [SummaryWithContent] = []
-    @State private var allItems: [SavedContent] = []
-    @State private var categories: [Category] = []
     @State private var searchText: String = ""
     @State private var sortOption: SortOption = .dateDesc
     @State private var errorMessage: String?
     @State private var isLoading = false
     @State private var selectedItem: SummaryWithContent?
     @State private var showDetailView = false
-    @State private var showCreateCategory = false
-    @State private var newCategoryName = ""
     
     var filteredSummaries: [SummaryWithContent] {
         var summaries = allSummaries
         
-        // Filter by custom category if selected
-        if let customCategoryId = selectedCustomCategoryId {
-            // Filter by custom category - match content IDs (summary.contentId with item.id)
-            let categoryItems = allItems.filter { $0.categoryId == customCategoryId }
-            let categoryItemIds = Set(categoryItems.map { $0.id })
-            
-            summaries = summaries.filter { summary in
-                categoryItemIds.contains(summary.contentId)
-            }
-        } else {
-            // Filter by content type category
-            if let contentType = selectedCategory.contentType {
-                summaries = summaries.filter { $0.contentType == contentType }
-            } else if selectedCategory == .queue {
-                return [] // Queue is handled separately
-            }
+        // Filter by category
+        if let contentType = selectedCategory.contentType {
+            summaries = summaries.filter { $0.contentType == contentType }
+        } else if selectedCategory == .queue {
+            return [] // Queue is handled separately
         }
         
         // Filter by search text
@@ -166,13 +150,10 @@ struct ContentView: View {
                 // Sidebar
                 SidebarView(
                     selectedCategory: $selectedCategory,
-                    selectedCustomCategoryId: $selectedCustomCategoryId,
                     categoryCounts: categoryCounts,
-                    categories: $categories,
-                    allItems: allItems,
-                    onSettings: { showSettings = true },
-                    onRefresh: loadData
+                    onSettings: { showSettings = true }
                 )
+                .environmentObject(supabaseManager)
                 .frame(minWidth: 250, idealWidth: 250, maxWidth: 300)
                 
                 // Main content area
@@ -203,7 +184,7 @@ struct ContentView: View {
                 DetailView(
                     summary: item,
                     onSave: { updatedItem in
-                            Task {
+                        Task {
                             // All updates are already done in saveChanges, just refresh data
                             await refreshAllSummaries()
                             // Update the selected item with fresh data from server
@@ -226,20 +207,16 @@ struct ContentView: View {
                 .environmentObject(supabaseManager)
         }
         .onAppear {
-                loadData()
+            loadData()
         }
         .onChange(of: supabaseManager.isConfigured) { configured in
             if configured {
                 supabaseManager.startPolling()
-                loadData()
+                    loadData()
+                }
             }
-        }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willBecomeActiveNotification)) { _ in
                 // Refresh data when app becomes active
-                loadData()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("RefreshContent"))) { _ in
-                // Refresh when category is assigned
                 loadData()
             }
         }
@@ -249,43 +226,6 @@ struct ContentView: View {
         Task {
             await refreshProcessingQueue()
             await refreshAllSummaries()
-            await refreshAllItems()
-            await refreshCategories()
-        }
-    }
-    
-    private func refreshAllItems() async {
-        do {
-            let items = try await supabaseManager.fetchAllContent()
-        await MainActor.run {
-                allItems = items
-                print("✅ Loaded \(items.count) items")
-                // Debug: show items with categories
-                let itemsWithCategories = items.filter { $0.categoryId != nil }
-                if !itemsWithCategories.isEmpty {
-                    print("   Items with categories: \(itemsWithCategories.count)")
-                    for item in itemsWithCategories {
-                        print("   - \(item.title): categoryId = \(item.categoryId?.uuidString ?? "nil")")
-                    }
-                }
-            }
-        } catch {
-            print("❌ Error loading all items: \(error)")
-        }
-    }
-    
-    private func refreshCategories() async {
-        do {
-            let cats = try await supabaseManager.fetchCategories()
-            await MainActor.run {
-                categories = cats
-                print("✅ Loaded \(cats.count) categories: \(cats.map { $0.name }.joined(separator: ", "))")
-            }
-        } catch {
-            print("❌ Error loading categories: \(error)")
-            await MainActor.run {
-                errorMessage = "Error loading categories: \(error.localizedDescription)"
-            }
         }
     }
     
@@ -381,14 +321,14 @@ struct ContentView: View {
                         print("⚠️ Summary \(summary.id) has no URL")
                     }
                     return SummaryWithContent(
-                                id: summary.id,
-                                contentId: summary.contentId,
+                        id: summary.id,
+                        contentId: summary.contentId,
                         contentTitle: summary.savedContent?.title ?? "Unknown",
                         contentType: summary.savedContent?.contentType,
-                                shortSummary: summary.shortSummary,
-                                detailedSummary: summary.detailedSummary,
+                        shortSummary: summary.shortSummary,
+                        detailedSummary: summary.detailedSummary,
                         url: url,
-                                extractedData: summary.extractedData,
+                        extractedData: summary.extractedData,
                         keyPoints: summary.keyPoints,
                         reviews: summary.reviews,
                         createdAt: summary.createdAt
@@ -418,11 +358,8 @@ struct ContentView: View {
     private func deleteContent(_ item: SummaryWithContent) async {
         do {
             try await supabaseManager.deleteContent(id: item.contentId)
-            // Refresh all data to update counts
             await refreshAllSummaries()
-            await refreshAllItems()
             await refreshProcessingQueue()
-            await refreshCategories()
         } catch {
             await MainActor.run {
                 errorMessage = "Error deleting content: \(error.localizedDescription)"
@@ -434,15 +371,12 @@ struct ContentView: View {
 // MARK: - Sidebar View
 struct SidebarView: View {
     @Binding var selectedCategory: SelectedCategory
-    @Binding var selectedCustomCategoryId: UUID?
     let categoryCounts: [SelectedCategory: Int]
-    @Binding var categories: [Category]
-    let allItems: [SavedContent]
     let onSettings: () -> Void
-    let onRefresh: () -> Void
     @EnvironmentObject var supabaseManager: SupabaseManager
+    @State private var categories: [Category] = []
+    @State private var selectedCustomCategoryId: UUID? = nil
     @State private var showCreateCategory = false
-    @State private var newCategoryName = ""
     
     var body: some View {
         VStack(spacing: 0) {
@@ -460,12 +394,11 @@ struct SidebarView: View {
             // Category list
             ScrollView {
                 VStack(spacing: 0) {
-                    // Built-in categories
                     ForEach(SelectedCategory.allCases, id: \.self) { category in
                         CategoryRow(
                             category: category,
                             count: categoryCounts[category] ?? 0,
-                            isSelected: selectedCategory == category && selectedCustomCategoryId == nil
+                            isSelected: selectedCategory == category
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -474,66 +407,50 @@ struct SidebarView: View {
                         }
                     }
                     
-                    // Custom categories section - always show
-                    Divider()
-                        .padding(.vertical, 8)
-                    
-                    HStack {
-                        Text("Categories")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                            .textCase(.uppercase)
-                        Spacer()
-                        if !categories.isEmpty {
-                            Text("\(categories.count)")
-                                .font(.caption2)
+                    // Custom Categories Section
+                    if !categories.isEmpty || true {
+                        Divider()
+                            .padding(.vertical, 8)
+                        
+                        HStack {
+                            Text("CATEGORIES")
+                                .font(.caption)
                                 .foregroundColor(.secondary)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            if !categories.isEmpty {
+                                Text("\(categories.count)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 4)
-                    
-                    // Show categories if they exist
-                    if !categories.isEmpty {
-                        ForEach(categories.filter { $0.parentId == nil }) { category in
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+                        
+                        ForEach(categories) { category in
                             CustomCategoryRow(
                                 category: category,
-                                count: allItems.filter { $0.categoryId == category.id }.count,
                                 isSelected: selectedCustomCategoryId == category.id
                             )
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 selectedCustomCategoryId = category.id
                                 selectedCategory = .all
-                                // Refresh data when category is selected
-                                onRefresh()
                             }
                         }
-                    } else {
-                        // Show placeholder when no categories
-                        HStack {
-                            Text("No categories yet")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
+                        
+                        Button(action: { showCreateCategory = true }) {
+                            HStack {
+                                Image(systemName: "plus")
+                                Text("New Category")
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                    }
-                    
-                    // Always show New Category button
-                    Button(action: { showCreateCategory = true }) {
-                        HStack {
-                            Image(systemName: "plus.circle")
-                        .font(.system(size: 14))
-                            Text("New Category")
-                            Spacer()
-                }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .buttonStyle(.plain)
                         .foregroundColor(.blue)
-            }
-                    .buttonStyle(.plain)
+                    }
                 }
             }
             
@@ -541,34 +458,42 @@ struct SidebarView: View {
             
             // Settings button
             Button(action: onSettings) {
-                    HStack {
+                HStack {
                     Image(systemName: "gearshape")
                     Text("Settings")
-                        Spacer()
-                    }
+                    Spacer()
+                }
                 .padding(.horizontal)
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
         }
         .background(Color(NSColor.controlBackgroundColor))
+        .onAppear {
+            Task {
+                await refreshCategories()
+            }
+        }
         .sheet(isPresented: $showCreateCategory) {
             CreateCategoryView(
-                categoryName: $newCategoryName,
-                categories: categories,
-                onSave: { name in
+                onSave: { _ in
                     Task {
-                        do {
-                            _ = try await supabaseManager.createCategory(name: name)
-                            onRefresh()
-                            showCreateCategory = false
-                            newCategoryName = ""
-                        } catch {
-                            print("Error creating category: \(error)")
-                        }
+                        await refreshCategories()
                     }
                 }
             )
+            .environmentObject(supabaseManager)
+        }
+    }
+    
+    private func refreshCategories() async {
+        do {
+            let fetchedCategories = try await supabaseManager.fetchCategories()
+            await MainActor.run {
+                categories = fetchedCategories
+            }
+        } catch {
+            print("Error fetching categories: \(error)")
         }
     }
 }
@@ -579,43 +504,13 @@ struct CategoryRow: View {
     let isSelected: Bool
     
     var body: some View {
-            HStack {
+        HStack {
             Image(systemName: category.icon)
                 .frame(width: 20)
                 .foregroundColor(isSelected ? .accentColor : .primary)
             Text(category.rawValue)
                 .foregroundColor(isSelected ? .accentColor : .primary)
-                Spacer()
-            if count > 0 {
-                Text("\(count)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.2))
-                    .cornerRadius(8)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
-        .contentShape(Rectangle())
-    }
-}
-
-struct CustomCategoryRow: View {
-    let category: Category
-    let count: Int
-    let isSelected: Bool
-    
-    var body: some View {
-            HStack {
-            Image(systemName: "folder")
-                .frame(width: 20)
-                .foregroundColor(isSelected ? .accentColor : .primary)
-            Text(category.name)
-                .foregroundColor(isSelected ? .accentColor : .primary)
-                Spacer()
+                        Spacer()
             if count > 0 {
                 Text("\(count)")
                     .font(.caption)
@@ -781,9 +676,6 @@ struct SummaryListItem: View {
     let onSelect: () -> Void
     let onEdit: () -> Void
     @State private var isHovered = false
-    @EnvironmentObject var supabaseManager: SupabaseManager
-    @State private var categories: [Category] = []
-    @State private var itemCategoryId: UUID? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -803,52 +695,6 @@ struct SummaryListItem: View {
                 .lineLimit(3)
             
             HStack {
-                // Category menu - make it more obvious
-                Menu {
-                    Button("No Category") {
-                        Task {
-                            try? await supabaseManager.updateContentCategory(contentId: summary.contentId, categoryId: nil)
-                            await MainActor.run {
-                                itemCategoryId = nil
-                            }
-                            // Trigger refresh
-                            NotificationCenter.default.post(name: NSNotification.Name("RefreshContent"), object: nil)
-                        }
-                    }
-                    if !categories.isEmpty {
-                        Divider()
-                        ForEach(categories) { category in
-                            Button(category.name) {
-                                Task {
-                                    try? await supabaseManager.updateContentCategory(contentId: summary.contentId, categoryId: category.id)
-                                    await MainActor.run {
-                                        itemCategoryId = category.id
-                                    }
-                                    // Trigger refresh
-                                    NotificationCenter.default.post(name: NSNotification.Name("RefreshContent"), object: nil)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: itemCategoryId != nil ? "folder.fill" : "folder")
-                            .font(.caption2)
-                        Text(categoryName)
-                            .font(.caption2)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8))
-                            .opacity(0.6)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(itemCategoryId != nil ? Color.blue.opacity(0.15) : Color.blue.opacity(0.1))
-                    .foregroundColor(.blue)
-                    .cornerRadius(6)
-                }
-                .menuStyle(.borderlessButton)
-                .help("Click to assign category")
-                
                 Text(summary.createdAt, style: .relative)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -876,20 +722,6 @@ struct SummaryListItem: View {
             }
         }
         .padding(.vertical, 8)
-        .onAppear {
-            Task {
-                do {
-                    categories = try await supabaseManager.fetchCategories()
-                    // Get the item's category ID - we need to fetch the saved content
-                    let items = try await supabaseManager.fetchAllContent()
-                    if let item = items.first(where: { $0.id == summary.contentId }) {
-                        itemCategoryId = item.categoryId
-                    }
-                } catch {
-                    print("Error loading categories: \(error)")
-                }
-            }
-        }
         .padding(.horizontal, 4)
         .background(isHovered ? Color.accentColor.opacity(0.05) : Color.clear)
         .contentShape(Rectangle())
@@ -918,14 +750,6 @@ struct SummaryListItem: View {
                 pasteboard.setString(summary.detailedSummary, forType: .string)
             }
         }
-    }
-    
-    private var categoryName: String {
-        if let categoryId = itemCategoryId,
-           let category = categories.first(where: { $0.id == categoryId }) {
-            return category.name
-        }
-        return "Category"
     }
 }
 
@@ -1058,7 +882,7 @@ struct DetailView: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.title2)
                     } else {
-                Text(summary.contentTitle)
+                        Text(summary.contentTitle)
                             .font(.title2)
                             .fontWeight(.bold)
                     }
@@ -1074,8 +898,8 @@ struct DetailView: View {
                             }
                             .pickerStyle(.menu)
                         } else if let contentType = summary.contentType {
-                    ContentTypeBadge(contentType: contentType)
-                }
+                            ContentTypeBadge(contentType: contentType)
+                        }
                         
                         Spacer()
                         
@@ -1095,8 +919,8 @@ struct DetailView: View {
                         .help(summary.url.isEmpty ? "No URL available" : "Open original page in browser")
                         
                         Text(summary.createdAt, style: .date)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                     
                     Divider()
@@ -1112,15 +936,16 @@ struct DetailView: View {
                                 .background(Color(NSColor.textBackgroundColor))
                                 .cornerRadius(4)
                         } else {
-                Text(summary.shortSummary)
-                    .font(.body)
+                            Text(summary.shortSummary)
+                                .font(.body)
+                                .textSelection(.enabled)
                         }
-            }
-            
-                    // Detailed Summary with Read More/Less
+                    }
+                    
+                    // Detailed Summary
                     VStack(alignment: .leading, spacing: 8) {
-                    Text("Detailed Summary")
-                        .font(.headline)
+                        Text("Detailed Summary")
+                            .font(.headline)
                         if isEditing {
                             TextEditor(text: $editedDetailedSummary)
                                 .frame(minHeight: 200)
@@ -1130,11 +955,10 @@ struct DetailView: View {
                         } else {
                             DetailedSummaryView(text: summary.detailedSummary)
                         }
-                }
-                
-                    // Key Points Section (short bullet points with price, specs, etc.)
-                    if let keyPoints = summary.keyPoints,
-                       !keyPoints.isEmpty {
+                    }
+                    
+                    // Key Points Section
+                    if let keyPoints = summary.keyPoints, !keyPoints.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Key Points")
                                 .font(.headline)
@@ -1142,8 +966,8 @@ struct DetailView: View {
                                 ForEach(Array(keyPoints.prefix(15).enumerated()), id: \.offset) { _, point in
                                     HStack(alignment: .top, spacing: 6) {
                                         Text("•")
-                        .foregroundColor(.secondary)
-                        .font(.body)
+                                            .foregroundColor(.secondary)
+                                            .font(.body)
                                         Text(point)
                                             .font(.body)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -1155,31 +979,28 @@ struct DetailView: View {
                             .cornerRadius(8)
                         }
                     }
-                
+                    
                     // Reviews Section
-                    if let reviews = summary.reviews,
-                       !reviews.isEmpty {
+                    if let reviews = summary.reviews, !reviews.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Reviews")
                                 .font(.headline)
                             VStack(alignment: .leading, spacing: 12) {
                                 ForEach(Array(reviews.prefix(5).enumerated()), id: \.offset) { _, review in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(review)
-                                            .font(.body)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    .padding(12)
-                                    .background(Color(NSColor.controlBackgroundColor))
-                                    .cornerRadius(8)
+                                    Text(review)
+                                        .font(.body)
+                                        .padding(12)
+                                        .background(Color(NSColor.controlBackgroundColor))
+                                        .cornerRadius(8)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                         }
                     }
-                
-                    // Other Extracted Data (structured data, actionable insights)
-                if let extractedData = summary.extractedData {
-                    StructuredDataView(extractedData: extractedData)
+                    
+                    // Extracted Data
+                    if let extractedData = summary.extractedData {
+                        StructuredDataView(extractedData: extractedData)
                     }
                 }
                 .padding()
@@ -1328,12 +1149,10 @@ struct StructuredDataView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Only show if there's structured data or actionable insights
-            // Key Points and Reviews are shown separately in DetailView
+            Text("Structured Data")
+                .font(.headline)
+            
             if let structuredData = extractedData.structuredData, !structuredData.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Structured Data")
-                        .font(.headline)
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(structuredData.keys.sorted()), id: \.self) { key in
                         HStack(alignment: .top) {
@@ -1350,6 +1169,21 @@ struct StructuredDataView: View {
                 .padding(8)
                 .background(Color(NSColor.controlBackgroundColor))
                 .cornerRadius(6)
+            }
+            
+            if let keyPoints = extractedData.keyPoints, !keyPoints.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Key Points")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    ForEach(Array(keyPoints.prefix(10).enumerated()), id: \.offset) { _, point in
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            Text(point)
+                                .font(.caption)
+                        }
+                    }
                 }
             }
             
@@ -1443,6 +1277,87 @@ struct SummaryWithContent: Identifiable, Hashable {
     }
 }
 
+// MARK: - Custom Category Row
+struct CustomCategoryRow: View {
+    let category: Category
+    let isSelected: Bool
+    
+    var body: some View {
+        HStack {
+            Image(systemName: "folder.fill")
+                .frame(width: 20)
+                .foregroundColor(isSelected ? .accentColor : .primary)
+            Text(category.name)
+                .foregroundColor(isSelected ? .accentColor : .primary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Create Category View
+struct CreateCategoryView: View {
+    @EnvironmentObject var supabaseManager: SupabaseManager
+    @Environment(\.dismiss) var dismiss
+    @State private var categoryName: String = ""
+    @State private var isCreating = false
+    
+    let onSave: (Category) -> Void
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("New Category")
+                .font(.title2)
+                .fontWeight(.bold)
+            
+            TextField("Category Name", text: $categoryName)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    createCategory()
+                }
+            
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.escape)
+                
+                Button("Create") {
+                    createCategory()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(categoryName.isEmpty || isCreating)
+                .keyboardShortcut(.return)
+            }
+        }
+        .padding()
+        .frame(width: 400)
+    }
+    
+    private func createCategory() {
+        guard !categoryName.isEmpty else { return }
+        isCreating = true
+        
+        Task {
+            do {
+                let category = try await supabaseManager.createCategory(name: categoryName)
+                await MainActor.run {
+                    onSave(category)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isCreating = false
+                    print("Error creating category: \(error)")
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Detailed Summary View with Read More/Less
 struct DetailedSummaryView: View {
     let text: String
@@ -1465,6 +1380,7 @@ struct DetailedSummaryView: View {
                         .lineSpacing(4)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .id(isExpanded)
                     
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -1490,40 +1406,5 @@ struct DetailedSummaryView: View {
                     .textSelection(.enabled)
             }
         }
-    }
-}
-
-// MARK: - Create Category View
-struct CreateCategoryView: View {
-    @Binding var categoryName: String
-    let categories: [Category]
-    let onSave: (String) -> Void
-    @Environment(\.dismiss) var dismiss
-    
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("New Category")
-                .font(.headline)
-            
-            TextField("Category Name", text: $categoryName)
-                .textFieldStyle(.roundedBorder)
-            
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Create") {
-                    if !categoryName.trimmingCharacters(in: .whitespaces).isEmpty {
-                        onSave(categoryName.trimmingCharacters(in: .whitespaces))
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(categoryName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding()
-        .frame(width: 400)
     }
 }
