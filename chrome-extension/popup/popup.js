@@ -201,10 +201,24 @@ async function handleSaveCurrentPage() {
       }
 
       // Send to background script
-      const bgResponse = await chrome.runtime.sendMessage({
-        action: 'saveYouTube',
-        data: response.data
-      });
+      let bgResponse;
+      try {
+        // Check if runtime is available
+        if (!chrome.runtime || !chrome.runtime.id) {
+          throw new Error('Extension context invalidated. Please reload the extension and refresh this page.');
+        }
+        
+        bgResponse = await chrome.runtime.sendMessage({
+          action: 'saveYouTube',
+          data: response.data
+        });
+      } catch (runtimeError) {
+        if (runtimeError.message.includes('Extension context invalidated') || 
+            runtimeError.message.includes('Receiving end does not exist')) {
+          throw new Error('Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Click the reload button on Cortex extension\n3. Refresh this page\n4. Try saving again');
+        }
+        throw runtimeError;
+      }
 
       if (!bgResponse || !bgResponse.success) {
         throw new Error(bgResponse?.error || 'Failed to save YouTube content');
@@ -231,10 +245,24 @@ async function handleSaveCurrentPage() {
       }
 
       // Send to background script
-      const bgResponse = await chrome.runtime.sendMessage({
-        action: 'saveContent',
-        data: response.data
-      });
+      let bgResponse;
+      try {
+        // Check if runtime is available
+        if (!chrome.runtime || !chrome.runtime.id) {
+          throw new Error('Extension context invalidated. Please reload the extension and refresh this page.');
+        }
+        
+        bgResponse = await chrome.runtime.sendMessage({
+          action: 'saveContent',
+          data: response.data
+        });
+      } catch (runtimeError) {
+        if (runtimeError.message.includes('Extension context invalidated') || 
+            runtimeError.message.includes('Receiving end does not exist')) {
+          throw new Error('Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Click the reload button on Cortex extension\n3. Refresh this page\n4. Try saving again');
+        }
+        throw runtimeError;
+      }
 
       if (!bgResponse || !bgResponse.success) {
         throw new Error(bgResponse?.error || 'Failed to save content');
@@ -252,8 +280,8 @@ async function handleSaveCurrentPage() {
     let errorMsg = error.message || 'Failed to save page';
     
     // Provide more helpful error messages
-    if (errorMsg.includes('Receiving end does not exist')) {
-      errorMsg = 'Content script not loaded. Please refresh the page and try again.';
+    if (errorMsg.includes('Extension context invalidated') || errorMsg.includes('Receiving end does not exist')) {
+      errorMsg = 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Click the reload button on Cortex extension\n3. Refresh this page\n4. Try saving again';
     } else if (errorMsg.includes('Cannot access')) {
       errorMsg = 'Cannot access this page. Please navigate to a regular website.';
     }

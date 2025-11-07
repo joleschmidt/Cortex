@@ -209,11 +209,11 @@ function findMainContent(body) {
 
 function extractTextToMarkdown() {
   const body = document.body.cloneNode(true);
-
+  
   // Remove script and style elements
   const scripts = body.querySelectorAll('script, style, noscript, iframe, embed, object');
   scripts.forEach(el => el.remove());
-
+  
   // FIRST: Identify and preserve large text blocks BEFORE filtering
   // This ensures we don't accidentally remove important descriptions
   const preservedElements = new Set();
@@ -288,7 +288,7 @@ function extractTextToMarkdown() {
     if (node.nodeType === Node.TEXT_NODE) {
       return node.textContent.trim();
     }
-
+    
     if (node.nodeType !== Node.ELEMENT_NODE) {
       return '';
     }
@@ -668,7 +668,7 @@ function extractTextToMarkdown() {
 
   // Extract metadata
   const metadata = extractMetadata();
-
+  
   return {
     text: plainText,
     markdown: markdown,
@@ -692,7 +692,7 @@ async function fetchYouTubeTranscript(videoId, apiKey) {
     const videoUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${apiKey}`;
     const videoResponse = await fetch(videoUrl);
     const videoData = await videoResponse.json();
-
+    
     if (!videoData.items || videoData.items.length === 0) {
       throw new Error('Video not found');
     }
@@ -710,7 +710,7 @@ async function fetchYouTubeTranscript(videoId, apiKey) {
     }
 
     // Get the first available caption track (prefer English)
-    const captionTrack = captionsData.items.find(item =>
+    const captionTrack = captionsData.items.find(item => 
       item.snippet.language === 'en' || item.snippet.language.startsWith('en')
     ) || captionsData.items[0];
 
@@ -739,7 +739,7 @@ function parseSRT(srtText) {
       return lines.slice(2).join(' ').trim();
     })
     .filter(line => line.length > 0);
-
+  
   return lines.join(' ');
 }
 
@@ -750,7 +750,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const { text, markdown, metadata } = extractTextToMarkdown();
       const title = document.title || 'Untitled';
       const url = window.location.href;
-
+      
       sendResponse({
         success: true,
         data: {
@@ -875,6 +875,20 @@ function showSaveMessage(success, message) {
   }, 3000);
 }
 
+// Check if extension context is valid
+function isExtensionContextValid() {
+  try {
+    if (!chrome || !chrome.runtime) {
+      return false;
+    }
+    // Try to access runtime.id - this will throw if context is invalidated
+    const id = chrome.runtime.id;
+    return !!id;
+  } catch (error) {
+    return false;
+  }
+}
+
 // Handle Ctrl+S keyboard shortcut
 function handleSaveShortcut(e) {
   // Check for Ctrl+S (or Cmd+S on Mac)
@@ -884,6 +898,13 @@ function handleSaveShortcut(e) {
     e.stopImmediatePropagation();
 
     console.log('[Cortex] Ctrl+S pressed, saving page...');
+    
+    // Check extension context BEFORE attempting to save
+    if (!isExtensionContextValid()) {
+      showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+      return false;
+    }
+    
     showSaveMessage(false, 'Saving...');
 
     (async () => {
@@ -897,20 +918,55 @@ function handleSaveShortcut(e) {
           if (videoId) {
             const result = await chrome.storage.sync.get(['youtubeApiKey']);
             const { title, transcript } = await fetchYouTubeTranscript(videoId, result.youtubeApiKey);
-            chrome.runtime.sendMessage({
-              action: 'saveYouTube',
-              data: { videoId, title, transcript }
-            }, (response) => {
-              if (chrome.runtime.lastError) {
-                console.error('[Cortex] Error:', chrome.runtime.lastError);
-                showSaveMessage(false, 'Error: ' + chrome.runtime.lastError.message);
-              } else if (response && response.success) {
-                console.log('[Cortex] YouTube content saved');
-                showSaveMessage(true, '✓ YouTube video saved!');
-              } else {
-                showSaveMessage(false, 'Error saving video');
+            // Check if runtime is available before sending
+            try {
+              if (!isExtensionContextValid()) {
+                throw new Error('Extension context invalidated');
               }
-            });
+              
+              chrome.runtime.sendMessage({
+                action: 'saveYouTube',
+                data: { videoId, title, transcript }
+              }, (response) => {
+                // Check for runtime errors first - wrap in try-catch because accessing lastError can throw
+                try {
+                  if (chrome.runtime && chrome.runtime.lastError) {
+                    const errorMsg = chrome.runtime.lastError.message;
+                    console.error('[Cortex] Error:', chrome.runtime.lastError);
+                    
+                    if (errorMsg.includes('Extension context invalidated') || 
+                        errorMsg.includes('Receiving end does not exist') ||
+                        errorMsg.includes('message port closed')) {
+                      showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+                    } else {
+                      showSaveMessage(false, 'Error: ' + errorMsg);
+                    }
+                    return;
+                  }
+                } catch (lastErrorAccess) {
+                  // Accessing lastError itself can throw if context is invalidated
+                  console.error('[Cortex] Error accessing lastError:', lastErrorAccess);
+                  showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+                  return;
+                }
+                
+                if (response && response.success) {
+                  console.log('[Cortex] YouTube content saved');
+                  showSaveMessage(true, '✓ YouTube video saved!');
+                } else {
+                  showSaveMessage(false, response?.error || 'Error saving video');
+                }
+              });
+            } catch (error) {
+              console.error('[Cortex] Runtime error:', error);
+              if (error.message.includes('Extension context invalidated') || 
+                  error.message.includes('Receiving end') ||
+                  !chrome.runtime || !chrome.runtime.id) {
+                showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+              } else {
+                showSaveMessage(false, 'Error: ' + error.message);
+              }
+            }
           }
         } else {
           // Extract regular page content
@@ -918,20 +974,55 @@ function handleSaveShortcut(e) {
           const title = document.title || 'Untitled';
           const url = window.location.href;
 
-          chrome.runtime.sendMessage({
-            action: 'saveContent',
-            data: { url, title, text, markdown, metadata }
-          }, (response) => {
-            if (chrome.runtime.lastError) {
-              console.error('[Cortex] Error:', chrome.runtime.lastError);
-              showSaveMessage(false, 'Error: ' + chrome.runtime.lastError.message);
-            } else if (response && response.success) {
-              console.log('[Cortex] Page content saved');
-              showSaveMessage(true, '✓ Page saved!');
-            } else {
-              showSaveMessage(false, response?.error || 'Error saving page');
+          // Check if runtime is available before sending
+          try {
+            if (!isExtensionContextValid()) {
+              throw new Error('Extension context invalidated');
             }
-          });
+            
+            chrome.runtime.sendMessage({
+              action: 'saveContent',
+              data: { url, title, text, markdown, metadata }
+            }, (response) => {
+              // Check for runtime errors first - wrap in try-catch because accessing lastError can throw
+              try {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                  const errorMsg = chrome.runtime.lastError.message;
+                  console.error('[Cortex] Error:', chrome.runtime.lastError);
+                  
+                  if (errorMsg.includes('Extension context invalidated') || 
+                      errorMsg.includes('Receiving end does not exist') ||
+                      errorMsg.includes('message port closed')) {
+                    showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+                  } else {
+                    showSaveMessage(false, 'Error: ' + errorMsg);
+                  }
+                  return;
+                }
+              } catch (lastErrorAccess) {
+                // Accessing lastError itself can throw if context is invalidated
+                console.error('[Cortex] Error accessing lastError:', lastErrorAccess);
+                showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+                return;
+              }
+              
+              if (response && response.success) {
+                console.log('[Cortex] Page content saved');
+                showSaveMessage(true, '✓ Page saved!');
+              } else {
+                showSaveMessage(false, response?.error || 'Error saving page');
+              }
+            });
+          } catch (error) {
+            console.error('[Cortex] Runtime error:', error);
+            if (error.message.includes('Extension context invalidated') || 
+                error.message.includes('Receiving end') ||
+                !chrome.runtime || !chrome.runtime.id) {
+              showSaveMessage(false, 'Extension context invalidated. Please:\n1. Go to chrome://extensions/\n2. Reload Cortex extension\n3. Refresh this page');
+            } else {
+              showSaveMessage(false, 'Error: ' + error.message);
+            }
+          }
         }
       } catch (error) {
         console.error('[Cortex] Error saving page:', error);
