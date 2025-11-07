@@ -1,0 +1,29 @@
+---
+alwaysApply: true
+---
+
+# AI-First Data Design Rules
+
+## Always Design for AI Consumption
+- Store and handle all data with AI processing in mind as a primary consideration
+- Data structures, schemas, and formats should be optimized for AI readability and processing
+
+## Data Storage Principles
+- **Structured over unstructured**: Prefer structured data formats (JSON, relational schemas) over unstructured text when possible
+- **Explicit metadata**: Always include metadata fields (content_type, extracted_data, timestamps, source) to help AI understand context
+- **Normalized formats**: Use consistent, normalized data formats across the system
+- **Type information**: Include type information in schemas and data structures
+
+## Data Handling Best Practices
+- **Clean extraction**: Extract and store data in clean, parseable formats
+- **Preserve context**: Store contextual information alongside data (URLs, timestamps, source identifiers)
+- **Avoid encoding issues**: Use UTF-8, avoid binary blobs when text alternatives exist
+- **Queryable structure**: Design schemas that enable efficient AI queries and filtering
+- **Versioning**: Consider versioning for data schemas to track changes over time
+
+## AI-Friendly Data Patterns
+- Store extracted text content separately from raw HTML/PDF when possible
+- Include both raw and processed/cleaned versions of data when useful
+- Use descriptive field names that clearly indicate content and purpose
+- Avoid nested structures that are difficult for AI to parse (prefer flat structures with clear relationships)
+- Include semantic markers (tags, categories, classifications) to aid AI understanding

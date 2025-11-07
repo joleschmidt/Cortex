@@ -1,6 +1,10 @@
 # Cortex
 
-A content capture system with AI-powered summarization using Chrome extension + macOS app.
+A content capture system with AI-powered summarization using Chrome extension + macOS app. Cortex is designed with an AI-first approach to data storage, enabling users to build their own "Second Brain" that AI systems can work with to develop a deeper understanding of the user's interests, preferences, and knowledge base.
+
+## Philosophy
+
+Cortex stores all data in an AI-optimized format, prioritizing structured information that AI systems can easily parse and understand. The goal is to help users create a comprehensive "Second Brain" - a personal knowledge base that AI can leverage to provide more contextual, personalized, and insightful assistance. By capturing and processing content with rich metadata, structured data extraction, and intelligent categorization, Cortex enables AI to develop a better understanding of the user over time, making interactions more meaningful and relevant.
 
 ## Features
 
@@ -10,6 +14,10 @@ A content capture system with AI-powered summarization using Chrome extension + 
 - **Markdown Preservation**: Maintains document structure (headings, lists, links)
 - **Real-time Processing**: Automatic background processing of saved content
 - **Dual Summaries**: Get both concise and detailed summaries
+- **AI-First Data Storage**: All data stored in structured, AI-readable formats with rich metadata
+- **Content Type Detection**: Automatic categorization (product, article, video, listing, general)
+- **Structured Data Extraction**: Extracts prices, features, specifications, key points, and actionable insights
+- **Personal Knowledge Base**: Build your Second Brain with searchable, categorized content
 
 ## Architecture
 
@@ -18,7 +26,7 @@ Chrome Extension → Supabase → macOS App → Apple Intelligence → Supabase 
 ```
 
 1. **Chrome Extension**: Captures web content and YouTube videos, saves to Supabase
-2. **Supabase**: Stores raw content and generated summaries
+2. **Supabase**: Stores raw content and generated summaries in AI-optimized formats
 3. **macOS App**: Polls for unprocessed content, generates summaries using Apple Intelligence
 4. **Apple Intelligence**: Provides native summarization capabilities
 

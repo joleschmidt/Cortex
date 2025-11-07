@@ -5,6 +5,8 @@ class SupabaseManager: ObservableObject {
     @Published var isConfigured: Bool = false
     @Published var lastError: String?
     @Published var processingCompleted: Bool = false // Triggers UI refresh
+    @Published var isPollingActive: Bool = false
+    @Published var lastProcessingAttempt: Date?
     
     var supabaseUrl: String?
     var supabaseKey: String? // Service role key
@@ -48,21 +50,55 @@ class SupabaseManager: ObservableObject {
     
     // MARK: - Polling
     func startPolling() {
-        guard isConfigured, !isPolling else { return }
+        guard isConfigured else {
+            print("⚠️ Cannot start polling: Supabase not configured")
+            return
+        }
         
+        guard !isPolling else {
+            print("⚠️ Polling already active")
+            return
+        }
+        
+        print("🚀 Starting polling with interval: \(pollingInterval)s")
         isPolling = true
+        
+        // Use RunLoop.main to ensure timer runs on main thread
         pollingTimer = Timer.scheduledTimer(withTimeInterval: pollingInterval, repeats: true) { [weak self] _ in
+            print("⏰ Polling timer fired")
             self?.processNextItem()
         }
+        
+        // Add timer to main run loop
+        if let timer = pollingTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.isPollingActive = true
+        }
+        
+        print("✅ Polling started successfully")
         
         // Process immediately on start
         processNextItem()
     }
     
     func stopPolling() {
+        print("🛑 Stopping polling")
         pollingTimer?.invalidate()
         pollingTimer = nil
         isPolling = false
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.isPollingActive = false
+        }
+    }
+    
+    // Manual trigger for processing (useful for debugging)
+    func processNow() {
+        print("🔧 Manual processing triggered")
+        processNextItem()
     }
     
     // MARK: - Date Decoding Helper
@@ -168,13 +204,16 @@ class SupabaseManager: ObservableObject {
         }
     }
     
-    func fetchAllContent() async throws -> [SavedContent] {
+    func fetchAllContent(categoryId: UUID? = nil) async throws -> [SavedContent] {
         guard let url = supabaseUrl, let key = supabaseKey else {
             print("❌ Supabase not configured - URL: \(supabaseUrl ?? "nil"), Key: \(supabaseKey != nil ? "set" : "nil")")
             throw SupabaseError.notConfigured
         }
         
-        let endpoint = "\(url)/rest/v1/saved_content?order=created_at.desc"
+        var endpoint = "\(url)/rest/v1/saved_content?order=created_at.desc"
+        if let categoryId = categoryId {
+            endpoint += "&category_id=eq.\(categoryId.uuidString)"
+        }
         print("🔍 Fetching all content from: \(endpoint)")
         
         var request = URLRequest(url: URL(string: endpoint)!)
@@ -357,15 +396,28 @@ class SupabaseManager: ObservableObject {
     
     // MARK: - Processing
     private func processNextItem() {
-        guard isConfigured else { return }
+        guard isConfigured else {
+            print("⚠️ Cannot process: Supabase not configured")
+            return
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.lastProcessingAttempt = Date()
+        }
+        
+        print("🔍 Looking for items to process...")
         
         Task {
             do {
                 let items = try await fetchUnprocessedContent()
+                print("📋 Found \(items.count) unprocessed items")
                 
                 guard let item = items.first else {
+                    print("ℹ️ No items to process")
                     return // No items to process
                 }
+                
+                print("📌 Processing item: \(item.title) (ID: \(item.id.uuidString))")
                 
                 // Skip if already processing (might be stuck, but let's try to complete it)
                 // Only mark as processing if it's pending
@@ -415,6 +467,8 @@ class SupabaseManager: ObservableObject {
                     self.processingCompleted.toggle() // Toggle to trigger refresh
                 }
                 
+                print("✅ Processing complete, UI refresh triggered")
+                
                 // Add jitter to avoid synchronized requests
                 let jitter = Double.random(in: 0...5)
                 try await Task.sleep(nanoseconds: UInt64(jitter * 1_000_000_000))
@@ -431,6 +485,153 @@ class SupabaseManager: ObservableObject {
                 
                 // Retry with exponential backoff (handled by timer)
             }
+        }
+    }
+    
+    // MARK: - Category Methods
+    func fetchCategories() async throws -> [Category] {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/categories?order=name.asc"
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "GET"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 200 {
+            let decoder = Self.createSupabaseDateDecoder()
+            return try decoder.decode([Category].self, from: data)
+        } else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw SupabaseError.apiError(httpResponse.statusCode, errorMessage)
+        }
+    }
+    
+    func createCategory(name: String, parentId: UUID? = nil) async throws -> Category {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/categories"
+        var payload: [String: Any] = ["name": name]
+        if let parentId = parentId {
+            payload["parent_id"] = parentId.uuidString
+        }
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "POST"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("return=representation", forHTTPHeaderField: "Prefer")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 201 {
+            let decoder = Self.createSupabaseDateDecoder()
+            let categories = try decoder.decode([Category].self, from: data)
+            return categories[0]
+        } else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw SupabaseError.apiError(httpResponse.statusCode, errorMessage)
+        }
+    }
+    
+    func updateCategory(categoryId: UUID, name: String, parentId: UUID? = nil) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/categories?id=eq.\(categoryId.uuidString)"
+        var payload: [String: Any] = ["name": name, "updated_at": ISO8601DateFormatter().string(from: Date())]
+        if let parentId = parentId {
+            payload["parent_id"] = parentId.uuidString
+        } else {
+            payload["parent_id"] = NSNull()
+        }
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "PATCH"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to update category")
+        }
+    }
+    
+    func deleteCategory(categoryId: UUID) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/categories?id=eq.\(categoryId.uuidString)"
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "DELETE"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to delete category")
+        }
+    }
+    
+    func updateContentCategory(contentId: UUID, categoryId: UUID?) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/saved_content?id=eq.\(contentId.uuidString)"
+        var payload: [String: Any] = [:]
+        if let categoryId = categoryId {
+            payload["category_id"] = categoryId.uuidString
+        } else {
+            payload["category_id"] = NSNull()
+        }
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "PATCH"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to update content category")
         }
     }
     
@@ -457,6 +658,95 @@ class SupabaseManager: ObservableObject {
         
         if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
             throw SupabaseError.apiError(httpResponse.statusCode, "Failed to mark as failed")
+        }
+    }
+    
+    // MARK: - Editing Methods
+    
+    func updateSummary(id: UUID, shortSummary: String, detailedSummary: String) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/summaries?id=eq.\(id.uuidString)"
+        let payload: [String: Any] = [
+            "short_summary": shortSummary,
+            "detailed_summary": detailedSummary
+        ]
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "PATCH"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to update summary")
+        }
+    }
+    
+    func updateContentTitle(id: UUID, title: String) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/saved_content?id=eq.\(id.uuidString)"
+        let payload: [String: Any] = ["title": title]
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "PATCH"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to update title")
+        }
+    }
+    
+    func deleteContent(id: UUID) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        // Delete summary first (if exists)
+        let summaryEndpoint = "\(url)/rest/v1/summaries?content_id=eq.\(id.uuidString)"
+        var summaryRequest = URLRequest(url: URL(string: summaryEndpoint)!)
+        summaryRequest.httpMethod = "DELETE"
+        summaryRequest.setValue(key, forHTTPHeaderField: "apikey")
+        summaryRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        
+        let (_, summaryResponse) = try await URLSession.shared.data(for: summaryRequest)
+        
+        // Delete content
+        let contentEndpoint = "\(url)/rest/v1/saved_content?id=eq.\(id.uuidString)"
+        var contentRequest = URLRequest(url: URL(string: contentEndpoint)!)
+        contentRequest.httpMethod = "DELETE"
+        contentRequest.setValue(key, forHTTPHeaderField: "apikey")
+        contentRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        
+        let (_, contentResponse) = try await URLSession.shared.data(for: contentRequest)
+        
+        guard let httpResponse = contentResponse as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to delete content")
         }
     }
 }

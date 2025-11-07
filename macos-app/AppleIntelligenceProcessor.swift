@@ -426,19 +426,30 @@ class AppleIntelligenceProcessor {
         // Score sentences using TF-IDF
         let scoredSentences = scoreSentences(sentences: sentences, contentType: contentType)
         
-        // Generate short summary (top 3-5 sentences, ~150 words)
-        let shortSummary = buildSummary(
+        // Extract key points for bullet list
+        let keyPoints = extractKeyPointsForSummary(text: text, contentType: contentType, scoredSentences: scoredSentences)
+        
+        // Generate short summary (flowing narrative, ~150 words)
+        let shortSummary = buildFlowingSummary(
             scoredSentences: scoredSentences,
             targetWords: 150,
             maxSentences: 5
         )
         
-        // Generate detailed summary (top 8-12 sentences, ~400 words)
-        let detailedSummary = buildSummary(
+        // Generate detailed summary (flowing narrative + key points)
+        let narrativeSummary = buildFlowingSummary(
             scoredSentences: scoredSentences,
-            targetWords: 400,
+            targetWords: 350,
             maxSentences: 12
         )
+        
+        let detailedSummary: String
+        if !keyPoints.isEmpty {
+            let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
+            detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
+        } else {
+            detailedSummary = narrativeSummary
+        }
         
         return Summaries(short: shortSummary, detailed: detailedSummary)
     }
@@ -565,21 +576,22 @@ class AppleIntelligenceProcessor {
         return stopWords.contains(word.lowercased())
     }
     
-    private func buildSummary(scoredSentences: [(sentence: String, score: Double)], targetWords: Int, maxSentences: Int) -> String {
-        var summary: [String] = []
+    private func buildFlowingSummary(scoredSentences: [(sentence: String, score: Double)], targetWords: Int, maxSentences: Int) -> String {
+        var selectedSentences: [String] = []
         var wordCount = 0
         
+        // Select top sentences up to target word count
         for (sentence, _) in scoredSentences.prefix(maxSentences) {
             let words = sentence.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
             if wordCount + words.count <= targetWords {
-                summary.append(sentence)
+                selectedSentences.append(sentence)
                 wordCount += words.count
             } else {
                 break
             }
         }
         
-        if summary.isEmpty && !scoredSentences.isEmpty {
+        if selectedSentences.isEmpty && !scoredSentences.isEmpty {
             // Fallback: use first sentence
             let firstSentence = scoredSentences[0].sentence
             let words = firstSentence.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
@@ -587,7 +599,271 @@ class AppleIntelligenceProcessor {
             return truncated + (words.count > targetWords ? "..." : "")
         }
         
-        return summary.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Create flowing text by intelligently combining sentences
+        return createFlowingText(from: selectedSentences)
+    }
+    
+    private func createFlowingText(from sentences: [String]) -> String {
+        guard !sentences.isEmpty else { return "" }
+        
+        var flowingSentences: [String] = []
+        
+        for (index, sentence) in sentences.enumerated() {
+            var cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Remove redundant sentence starters if not first sentence
+            if index > 0 {
+                // Remove common redundant phrases at the start
+                let redundantStarters = [
+                    "This ", "The ", "It ", "That ", "These ", "Those ",
+                    "In addition, ", "Furthermore, ", "Moreover, ",
+                    "Additionally, ", "Also, ", "Plus, "
+                ]
+                for starter in redundantStarters {
+                    if cleaned.hasPrefix(starter) {
+                        cleaned = String(cleaned.dropFirst(starter.count))
+                        break
+                    }
+                }
+            }
+            
+            // Ensure sentence ends with punctuation
+            if !cleaned.isEmpty {
+                let lastChar = cleaned.suffix(1)
+                if lastChar != "." && lastChar != "!" && lastChar != "?" {
+                    cleaned += "."
+                }
+                flowingSentences.append(cleaned)
+            }
+        }
+        
+        // Join sentences with proper spacing
+        var flowingText = flowingSentences.joined(separator: " ")
+        
+        // Ensure proper capitalization of first letter
+        if !flowingText.isEmpty {
+            let firstChar = flowingText.prefix(1).uppercased()
+            let rest = flowingText.dropFirst()
+            flowingText = firstChar + rest
+        }
+        
+        // Clean up multiple spaces
+        while flowingText.contains("  ") {
+            flowingText = flowingText.replacingOccurrences(of: "  ", with: " ")
+        }
+        
+        return flowingText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    private func extractKeyPointsForSummary(text: String, contentType: ContentType, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
+        var keyPoints: [String] = []
+        
+        switch contentType {
+        case .product:
+            // Extract product features, specs, and highlights
+            keyPoints = extractProductKeyPoints(text: text, scoredSentences: scoredSentences)
+            
+        case .article:
+            // Extract main points from article
+            keyPoints = extractArticleKeyPoints(text: text, scoredSentences: scoredSentences)
+            
+        case .video:
+            // Extract key topics and moments
+            keyPoints = extractVideoKeyPoints(text: text, scoredSentences: scoredSentences)
+            
+        case .listing, .general:
+            // Extract general highlights
+            keyPoints = extractGeneralKeyPoints(text: text, scoredSentences: scoredSentences)
+        }
+        
+        // Limit to top 8-10 key points
+        return Array(keyPoints.prefix(10))
+    }
+    
+    private func extractProductKeyPoints(text: String, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
+        var points: [String] = []
+        let lowerText = text.lowercased()
+        
+        // Extract price (including German format with comma)
+        let pricePattern = #"[\$€£¥]\s*[\d.,]+\s*[\d]*"#
+        if let priceRange = text.range(of: pricePattern, options: .regularExpression) {
+            let price = String(text[priceRange]).trimmingCharacters(in: .whitespaces)
+            points.append("Price: \(price)")
+        }
+        
+        // Extract availability (German and English)
+        if lowerText.contains("in stock") || lowerText.contains("available") || 
+           lowerText.contains("ab lager") || lowerText.contains("verfügbar") {
+            points.append("Available in stock")
+        }
+        
+        // Extract key specifications and features
+        let lines = text.components(separatedBy: .newlines)
+        var features: [String] = []
+        var specs: [String] = []
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // Look for bullet points or list items
+            if trimmed.hasPrefix("-") || trimmed.hasPrefix("•") || trimmed.hasPrefix("*") {
+                let feature = trimmed
+                    .replacingOccurrences(of: "^[-•*]\\s*", with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces)
+                if feature.count > 10 && feature.count < 150 && !features.contains(feature) {
+                    features.append(feature)
+                }
+            }
+            
+            // Look for specification lines (format: "Key: Value" or "Key - Value")
+            if trimmed.contains(":") && trimmed.count > 15 && trimmed.count < 150 {
+                // Check if it's a spec line (not just a colon in text)
+                let parts = trimmed.components(separatedBy: ":")
+                if parts.count == 2 {
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    let value = parts[1].trimmingCharacters(in: .whitespaces)
+                    // Only add if key is short (likely a spec label)
+                    if key.count < 50 && value.count > 5 && value.count < 100 {
+                        let spec = "\(key): \(value)"
+                        if !specs.contains(spec) {
+                            specs.append(spec)
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Add top features
+        points.append(contentsOf: features.prefix(5))
+        
+        // Add key specifications (limit to most important)
+        let importantSpecs = specs.filter { spec in
+            let lowerSpec = spec.lowercased()
+            return lowerSpec.contains("material") || lowerSpec.contains("finish") ||
+                   lowerSpec.contains("mensur") || lowerSpec.contains("scale") ||
+                   lowerSpec.contains("radius") || lowerSpec.contains("breite") ||
+                   lowerSpec.contains("width") || lowerSpec.contains("übersetzung") ||
+                   lowerSpec.contains("ratio") || lowerSpec.contains("tonabnehmer") ||
+                   lowerSpec.contains("pickup")
+        }
+        points.append(contentsOf: importantSpecs.prefix(5))
+        
+        // Extract key highlights from high-scoring sentences
+        for (sentence, score) in scoredSentences.prefix(20) {
+            let lowerSentence = sentence.lowercased()
+            // Look for sentences mentioning key features, materials, or special characteristics
+            if score > 2.5 && (
+                lowerSentence.contains("hand") || lowerSentence.contains("custom") ||
+                lowerSentence.contains("premium") || lowerSentence.contains("vintage") ||
+                lowerSentence.contains("material") || lowerSentence.contains("finish") ||
+                lowerSentence.contains("feature") || lowerSentence.contains("specification") ||
+                lowerSentence.contains("golden era") || lowerSentence.contains("special edition") ||
+                lowerSentence.contains("limited") || lowerSentence.contains("exclusive")
+            ) {
+                // Create concise key point from sentence
+                let cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Truncate very long sentences to key phrase
+                if cleaned.count > 120 {
+                    // Try to extract the key phrase
+                    let words = cleaned.components(separatedBy: .whitespaces)
+                    if words.count > 15 {
+                        let keyPhrase = words.prefix(15).joined(separator: " ") + "..."
+                        if !points.contains(keyPhrase) {
+                            points.append(keyPhrase)
+                        }
+                    }
+                } else if cleaned.count > 20 && !points.contains(cleaned) {
+                    points.append(cleaned)
+                }
+            }
+        }
+        
+        // Remove duplicates while preserving order
+        var uniquePoints: [String] = []
+        for point in points {
+            if !uniquePoints.contains(point) {
+                uniquePoints.append(point)
+            }
+        }
+        
+        return Array(uniquePoints.prefix(10))
+    }
+    
+    private func extractArticleKeyPoints(text: String, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
+        var points: [String] = []
+        
+        // Extract headings
+        let lines = text.components(separatedBy: .newlines)
+        for line in lines {
+            if line.hasPrefix("#") || line.hasPrefix("##") {
+                let heading = line.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces)
+                if heading.count > 5 && heading.count < 100 {
+                    points.append(heading)
+                }
+            }
+        }
+        
+        // Extract main points from top sentences
+        for (sentence, _) in scoredSentences.prefix(8) {
+            let cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count > 30 && cleaned.count < 150 {
+                points.append(cleaned)
+            }
+        }
+        
+        return points
+    }
+    
+    private func extractVideoKeyPoints(text: String, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
+        var points: [String] = []
+        
+        // Extract topics from high-frequency words
+        let words = text.lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { $0.count > 4 }
+        
+        var wordCounts: [String: Int] = [:]
+        for word in words {
+            wordCounts[word, default: 0] += 1
+        }
+        
+        let topWords = wordCounts.sorted { $0.value > $1.value }.prefix(5)
+        points.append(contentsOf: topWords.map { $0.key.capitalized })
+        
+        // Extract key moments
+        for (sentence, _) in scoredSentences.prefix(8) {
+            let cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count > 20 && cleaned.count < 150 {
+                points.append(cleaned)
+            }
+        }
+        
+        return points
+    }
+    
+    private func extractGeneralKeyPoints(text: String, scoredSentences: [(sentence: String, score: Double)]) -> [String] {
+        var points: [String] = []
+        
+        // Extract headings
+        let lines = text.components(separatedBy: .newlines)
+        for line in lines {
+            if line.hasPrefix("#") {
+                let heading = line.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces)
+                if heading.count > 5 {
+                    points.append(heading)
+                }
+            }
+        }
+        
+        // Extract top sentences
+        for (sentence, _) in scoredSentences.prefix(8) {
+            let cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.count > 20 && cleaned.count < 150 {
+                points.append(cleaned)
+            }
+        }
+        
+        return points
     }
     
     private func log(_ value: Double) -> Double {
