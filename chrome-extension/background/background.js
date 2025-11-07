@@ -4,21 +4,31 @@
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'saveContent') {
     handleSaveContent(message.data)
-      .then(result => sendResponse({ success: true, data: result }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
+      .then(result => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
     return true; // Keep channel open for async response
   }
 
   if (message.action === 'saveYouTube') {
     handleSaveYouTube(message.data)
-      .then(result => sendResponse({ success: true, data: result }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
+      .then(result => {
+        sendResponse({ success: true, data: result });
+      })
+      .catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
     return true; // Keep channel open for async response
   }
+  
+  return false; // Not handled
 });
 
 async function handleSaveContent(data) {
-  const { url, title, text, markdown } = data;
+  const { url, title, text, markdown, metadata: extractedMetadata } = data;
   
   // Validate data
   if (!url || !title || !text) {
@@ -37,10 +47,11 @@ async function handleSaveContent(data) {
     throw new Error('Supabase not configured. Please set up in extension settings.');
   }
 
-  // Save to Supabase
+  // Save to Supabase - merge extracted metadata with system metadata
   const metadata = {
     extracted_at: new Date().toISOString(),
-    content_length: cleanText.length
+    content_length: cleanText.length,
+    ...(extractedMetadata || {})
   };
 
   const payload = {
@@ -183,6 +194,56 @@ async function handleSaveYouTube(data) {
   });
 
   return result;
+}
+
+// Handle keyboard shortcut
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'save-page') {
+    handleKeyboardSave();
+  }
+});
+
+async function handleKeyboardSave() {
+  try {
+    // Get the active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) {
+      throw new Error('No active tab found');
+    }
+
+    // Check if it's a YouTube page
+    const isYouTube = tab.url && (
+      tab.url.includes('youtube.com/watch') || 
+      tab.url.includes('youtu.be/')
+    );
+
+    if (isYouTube) {
+      // Extract YouTube content
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractYouTube' });
+      if (response && response.success) {
+        await handleSaveYouTube(response.data);
+      } else {
+        throw new Error(response?.error || 'Failed to extract YouTube content');
+      }
+    } else {
+      // Extract regular page content
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractContent' });
+      if (response && response.success) {
+        await handleSaveContent(response.data);
+      } else {
+        throw new Error(response?.error || 'Failed to extract page content');
+      }
+    }
+  } catch (error) {
+    console.error('Error saving page:', error);
+    // Show error notification
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: 'Save Failed',
+      message: error.message || 'Failed to save page'
+    });
+  }
 }
 
 // Handle extension installation

@@ -1,5 +1,14 @@
 import Foundation
 
+// MARK: - ContentType
+enum ContentType: String, Codable {
+    case product = "product"
+    case article = "article"
+    case video = "video"
+    case listing = "listing"
+    case general = "general"
+}
+
 // MARK: - SavedContent
 struct SavedContent: Codable, Identifiable {
     let id: UUID
@@ -9,6 +18,7 @@ struct SavedContent: Codable, Identifiable {
     let contentMarkdown: String?
     let metadata: [String: AnyCodable]?
     let videoId: String?
+    let contentType: ContentType?
     let createdAt: Date
     let processedAt: Date?
     let status: ProcessingStatus
@@ -21,6 +31,7 @@ struct SavedContent: Codable, Identifiable {
         case contentMarkdown = "content_markdown"
         case metadata
         case videoId = "video_id"
+        case contentType = "content_type"
         case createdAt = "created_at"
         case processedAt = "processed_at"
         case status
@@ -47,6 +58,7 @@ struct SavedContent: Codable, Identifiable {
         }
         
         videoId = try container.decodeIfPresent(String.self, forKey: .videoId)
+        contentType = try container.decodeIfPresent(ContentType.self, forKey: .contentType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         processedAt = try container.decodeIfPresent(Date.self, forKey: .processedAt)
         status = try container.decode(ProcessingStatus.self, forKey: .status)
@@ -62,9 +74,53 @@ struct SavedContent: Codable, Identifiable {
         try container.encodeIfPresent(contentMarkdown, forKey: .contentMarkdown)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encodeIfPresent(videoId, forKey: .videoId)
+        try container.encodeIfPresent(contentType, forKey: .contentType)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(processedAt, forKey: .processedAt)
         try container.encode(status, forKey: .status)
+    }
+}
+
+// MARK: - ExtractedData
+struct ExtractedData: Codable {
+    let type: String
+    let structuredData: [String: AnyCodable]?
+    let keyPoints: [String]?
+    let actionableInsights: [String]?
+    let metadata: [String: AnyCodable]?
+    
+    enum CodingKeys: String, CodingKey {
+        case type
+        case structuredData = "structured_data"
+        case keyPoints = "key_points"
+        case actionableInsights = "actionable_insights"
+        case metadata
+    }
+    
+    init(type: String, structuredData: [String: AnyCodable]?, keyPoints: [String]?, actionableInsights: [String]?, metadata: [String: AnyCodable]?) {
+        self.type = type
+        self.structuredData = structuredData
+        self.keyPoints = keyPoints
+        self.actionableInsights = actionableInsights
+        self.metadata = metadata
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        structuredData = try container.decodeIfPresent([String: AnyCodable].self, forKey: .structuredData)
+        keyPoints = try container.decodeIfPresent([String].self, forKey: .keyPoints)
+        actionableInsights = try container.decodeIfPresent([String].self, forKey: .actionableInsights)
+        
+        if container.contains(.metadata) {
+            if let metadataDict = try? container.decode([String: AnyCodable].self, forKey: .metadata) {
+                metadata = metadataDict
+            } else {
+                metadata = nil
+            }
+        } else {
+            metadata = nil
+        }
     }
 }
 
@@ -74,6 +130,7 @@ struct Summary: Codable, Identifiable {
     let contentId: UUID
     let shortSummary: String
     let detailedSummary: String
+    let extractedData: ExtractedData?
     let createdAt: Date
     
     enum CodingKeys: String, CodingKey {
@@ -81,6 +138,7 @@ struct Summary: Codable, Identifiable {
         case contentId = "content_id"
         case shortSummary = "short_summary"
         case detailedSummary = "detailed_summary"
+        case extractedData = "extracted_data"
         case createdAt = "created_at"
     }
 }

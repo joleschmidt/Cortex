@@ -1,0 +1,28 @@
+---
+alwaysApply: true
+---
+
+# MCP Usage Rules
+
+## Always Prefer MCPs
+- Use MCP (Model Context Protocol) tools as often as possible when available
+- Always use the right MCP for the task at hand
+- Prefer MCP tools over direct API calls, terminal commands, or manual implementations when an appropriate MCP exists
+
+## MCP Selection Guidelines
+- **Supabase operations**: Use `mcp_supabase_*` tools for all database, project, and Supabase-related tasks
+- **Xcode/iOS/macOS development**: Use `mcp_XcodeBuildMCP_*` tools for builds, simulators, testing, and Xcode operations
+- **Browser automation**: Use `mcp_cursor-browser-extension_*` tools for web interactions and testing
+- **Documentation**: Use `mcp_supabase_search_docs` for Supabase documentation queries
+
+## When to Use MCPs
+- Database queries and migrations → Supabase MCP
+- Project management (create, pause, restore) → Supabase MCP
+- Building/testing iOS/macOS apps → Xcode Build MCP
+- Simulator operations → Xcode Build MCP
+- Web scraping/testing → Browser Extension MCP
+- Documentation lookups → Appropriate MCP search tools
+
+## Fallback
+- Only use alternative methods (direct API calls, terminal commands) when no appropriate MCP tool exists for the task
+

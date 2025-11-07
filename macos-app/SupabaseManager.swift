@@ -4,6 +4,7 @@ import Combine
 class SupabaseManager: ObservableObject {
     @Published var isConfigured: Bool = false
     @Published var lastError: String?
+    @Published var processingCompleted: Bool = false // Triggers UI refresh
     
     var supabaseUrl: String?
     var supabaseKey: String? // Service role key
@@ -122,7 +123,8 @@ class SupabaseManager: ObservableObject {
             throw SupabaseError.notConfigured
         }
         
-        let endpoint = "\(url)/rest/v1/saved_content?status=eq.pending&order=created_at.asc&limit=10"
+        // Fetch both pending and processing items (processing items might be stuck)
+        let endpoint = "\(url)/rest/v1/saved_content?status=in.(pending,processing)&order=created_at.asc&limit=10"
         print("🔍 Fetching from: \(endpoint)")
         
         var request = URLRequest(url: URL(string: endpoint)!)
@@ -146,6 +148,51 @@ class SupabaseManager: ObservableObject {
                 print("📄 Raw JSON response: \(jsonString.prefix(500))")
             }
             
+            let decoder = Self.createSupabaseDateDecoder()
+            
+            do {
+                let items = try decoder.decode([SavedContent].self, from: data)
+                print("✅ Decoded \(items.count) items")
+                return items
+            } catch {
+                print("❌ Decoding error: \(error)")
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📄 Full JSON: \(jsonString.prefix(2000))")
+                }
+                throw error
+            }
+        } else {
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            print("❌ API Error \(httpResponse.statusCode): \(errorMessage)")
+            throw SupabaseError.apiError(httpResponse.statusCode, errorMessage)
+        }
+    }
+    
+    func fetchAllContent() async throws -> [SavedContent] {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            print("❌ Supabase not configured - URL: \(supabaseUrl ?? "nil"), Key: \(supabaseKey != nil ? "set" : "nil")")
+            throw SupabaseError.notConfigured
+        }
+        
+        let endpoint = "\(url)/rest/v1/saved_content?order=created_at.desc"
+        print("🔍 Fetching all content from: \(endpoint)")
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "GET"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ Invalid response type")
+            throw SupabaseError.invalidResponse
+        }
+        
+        print("📡 Response status: \(httpResponse.statusCode)")
+        
+        if httpResponse.statusCode == 200 {
             let decoder = Self.createSupabaseDateDecoder()
             
             do {
@@ -192,18 +239,65 @@ class SupabaseManager: ObservableObject {
         }
     }
     
-    func updateContentWithSummary(contentId: UUID, shortSummary: String, detailedSummary: String) async throws {
+    func updateContentType(contentId: UUID, contentType: ContentType) async throws {
         guard let url = supabaseUrl, let key = supabaseKey else {
             throw SupabaseError.notConfigured
         }
         
+        let endpoint = "\(url)/rest/v1/saved_content?id=eq.\(contentId.uuidString)"
+        let payload: [String: Any] = ["content_type": contentType.rawValue]
+        
+        var request = URLRequest(url: URL(string: endpoint)!)
+        request.httpMethod = "PATCH"
+        request.setValue(key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SupabaseError.invalidResponse
+        }
+        
+        if httpResponse.statusCode != 200 && httpResponse.statusCode != 204 {
+            throw SupabaseError.apiError(httpResponse.statusCode, "Failed to update content type")
+        }
+    }
+    
+    func updateContentWithSummary(contentId: UUID, shortSummary: String, detailedSummary: String, extractedData: ExtractedData) async throws {
+        guard let url = supabaseUrl, let key = supabaseKey else {
+            throw SupabaseError.notConfigured
+        }
+        
+        print("💾 Saving summary for content: \(contentId)")
+        print("   Short summary length: \(shortSummary.count)")
+        print("   Detailed summary length: \(detailedSummary.count)")
+        
+        // Convert ExtractedData to JSON
+        var extractedDataDict: [String: Any] = [:]
+        do {
+            let encoder = JSONEncoder()
+            let extractedDataJSON = try encoder.encode(extractedData)
+            extractedDataDict = try JSONSerialization.jsonObject(with: extractedDataJSON) as? [String: Any] ?? [:]
+            print("   Extracted data keys: \(extractedDataDict.keys.joined(separator: ", "))")
+        } catch {
+            print("⚠️ Warning: Failed to encode extracted data: \(error)")
+            // Continue without extracted_data if encoding fails
+        }
+        
         // First, create the summary
         let summaryEndpoint = "\(url)/rest/v1/summaries"
-        let summaryPayload: [String: Any] = [
+        var summaryPayload: [String: Any] = [
             "content_id": contentId.uuidString,
             "short_summary": shortSummary,
             "detailed_summary": detailedSummary
         ]
+        
+        // Add extracted_data if present
+        if !extractedDataDict.isEmpty {
+            summaryPayload["extracted_data"] = extractedDataDict
+        }
         
         var summaryRequest = URLRequest(url: URL(string: summaryEndpoint)!)
         summaryRequest.httpMethod = "POST"
@@ -211,18 +305,30 @@ class SupabaseManager: ObservableObject {
         summaryRequest.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         summaryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         summaryRequest.setValue("return=representation", forHTTPHeaderField: "Prefer")
-        summaryRequest.httpBody = try JSONSerialization.data(withJSONObject: summaryPayload)
+        
+        do {
+            summaryRequest.httpBody = try JSONSerialization.data(withJSONObject: summaryPayload)
+        } catch {
+            print("❌ Failed to serialize summary payload: \(error)")
+            throw SupabaseError.apiError(500, "Failed to serialize summary payload: \(error.localizedDescription)")
+        }
         
         let (summaryData, summaryResponse) = try await URLSession.shared.data(for: summaryRequest)
         
         guard let summaryHttpResponse = summaryResponse as? HTTPURLResponse else {
+            print("❌ Invalid response type when saving summary")
             throw SupabaseError.invalidResponse
         }
         
+        print("📡 Summary save response: \(summaryHttpResponse.statusCode)")
+        
         if summaryHttpResponse.statusCode != 201 {
             let errorMessage = String(data: summaryData, encoding: .utf8) ?? "Unknown error"
+            print("❌ Failed to save summary: \(errorMessage)")
             throw SupabaseError.apiError(summaryHttpResponse.statusCode, errorMessage)
         }
+        
+        print("✅ Summary saved successfully")
         
         // Then, update the content status to completed
         let contentEndpoint = "\(url)/rest/v1/saved_content?id=eq.\(contentId.uuidString)"
@@ -261,34 +367,52 @@ class SupabaseManager: ObservableObject {
                     return // No items to process
                 }
                 
-                // Mark as processing
-                try await markAsProcessing(contentId: item.id)
+                // Skip if already processing (might be stuck, but let's try to complete it)
+                // Only mark as processing if it's pending
+                if item.status == .pending {
+                    try await markAsProcessing(contentId: item.id)
+                } else {
+                    print("⚠️ Item \(item.id) is already in processing status, attempting to complete...")
+                }
                 
-                // Generate summaries with error handling
+                // Process content with error handling
                 let processor = AppleIntelligenceProcessor()
-                let summaries: Summaries
+                let result: ProcessingResult
                 
                 do {
-                    summaries = try await processor.generateSummaries(
+                    print("🔄 Processing item: \(item.title)")
+                    result = try await processor.processContent(
+                        url: item.url,
+                        title: item.title,
                         content: item.contentText,
-                        markdown: item.contentMarkdown ?? item.contentText
+                        markdown: item.contentMarkdown ?? item.contentText,
+                        metadata: item.metadata
                     )
+                    print("✅ Processing completed for: \(item.title)")
                 } catch {
-                    // If summarization fails, mark as failed
+                    // If processing fails, mark as failed
+                    print("❌ Processing failed for \(item.title): \(error)")
                     try await markAsFailed(contentId: item.id)
                     throw error
                 }
                 
-                // Save summaries
+                // Update content type
+                try await updateContentType(contentId: item.id, contentType: result.contentType)
+                print("✅ Content type updated: \(result.contentType.rawValue)")
+                
+                // Save summaries with extracted data
                 try await updateContentWithSummary(
                     contentId: item.id,
-                    shortSummary: summaries.short,
-                    detailedSummary: summaries.detailed
+                    shortSummary: result.summaries.short,
+                    detailedSummary: result.summaries.detailed,
+                    extractedData: result.extractedData
                 )
+                print("✅ Summary saved for: \(item.title)")
                 
-                // Clear error on success
+                // Clear error on success and trigger UI refresh
                 await MainActor.run {
                     self.lastError = nil
+                    self.processingCompleted.toggle() // Toggle to trigger refresh
                 }
                 
                 // Add jitter to avoid synchronized requests
@@ -299,7 +423,11 @@ class SupabaseManager: ObservableObject {
                 await MainActor.run {
                     self.lastError = error.localizedDescription
                 }
-                print("Error processing content: \(error)")
+                print("❌ Error processing content: \(error)")
+                if let nsError = error as NSError? {
+                    print("   Domain: \(nsError.domain), Code: \(nsError.code)")
+                    print("   UserInfo: \(nsError.userInfo)")
+                }
                 
                 // Retry with exponential backoff (handled by timer)
             }
