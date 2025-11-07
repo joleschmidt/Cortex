@@ -333,7 +333,19 @@ class SupabaseManager: ObservableObject {
             "detailed_summary": detailedSummary
         ]
         
-        // Add extracted_data if present
+        // Add key_points as separate column if present
+        if let keyPoints = extractedData.keyPoints, !keyPoints.isEmpty {
+            summaryPayload["key_points"] = keyPoints
+            print("   Key points count: \(keyPoints.count)")
+        }
+        
+        // Add reviews as separate column if present
+        if let reviews = extractedData.reviews, !reviews.isEmpty {
+            summaryPayload["reviews"] = reviews
+            print("   Reviews count: \(reviews.count)")
+        }
+        
+        // Add extracted_data if present (for backward compatibility and other data)
         if !extractedDataDict.isEmpty {
             summaryPayload["extracted_data"] = extractedDataDict
         }

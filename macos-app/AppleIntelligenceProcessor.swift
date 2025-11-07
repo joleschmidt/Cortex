@@ -39,8 +39,8 @@ class AppleIntelligenceProcessor {
         // Detect content type
         let contentType = detectContentType(url: url, title: title, text: processedText, metadata: metadata)
         
-        // Extract structured data based on content type
-        let extractedData = try await extractStructuredData(
+        // Extract structured data based on content type (basic extraction)
+        var extractedData = try await extractStructuredData(
             contentType: contentType,
             url: url,
             title: title,
@@ -49,23 +49,51 @@ class AppleIntelligenceProcessor {
         )
         
         // Generate summaries with content-aware strategies
+        // This also gives us scoredSentences for comprehensive keyPoints extraction
         let summaries: Summaries
+        let scoredSentences: [(sentence: String, score: Double)]
+        
         if isAvailable {
             if #available(macOS 15.0, *) {
-                summaries = try await generateWithAppleIntelligence(
+                let result = try await generateWithAppleIntelligenceAndScoredSentences(
                     text: processedText,
                     contentType: contentType
                 )
+                summaries = result.summaries
+                scoredSentences = result.scoredSentences
             } else {
-                summaries = try generateEnhancedSummaries(
+                let result = try generateEnhancedSummariesWithScoredSentences(
                     text: processedText,
                     contentType: contentType
                 )
+                summaries = result.summaries
+                scoredSentences = result.scoredSentences
             }
         } else {
-            summaries = try generateEnhancedSummaries(
+            let result = try generateEnhancedSummariesWithScoredSentences(
                 text: processedText,
                 contentType: contentType
+            )
+            summaries = result.summaries
+            scoredSentences = result.scoredSentences
+        }
+        
+        // Extract comprehensive keyPoints using scoredSentences
+        let comprehensiveKeyPoints = extractComprehensiveKeyPoints(
+            contentType: contentType,
+            text: processedText,
+            scoredSentences: scoredSentences
+        )
+        
+        // Update ExtractedData with comprehensive keyPoints
+        if !comprehensiveKeyPoints.isEmpty {
+            extractedData = ExtractedData(
+                type: extractedData.type,
+                structuredData: extractedData.structuredData,
+                keyPoints: comprehensiveKeyPoints,
+                actionableInsights: extractedData.actionableInsights,
+                reviews: extractedData.reviews,
+                metadata: extractedData.metadata
             )
         }
         
@@ -199,6 +227,9 @@ class AppleIntelligenceProcessor {
             actionableInsights = generalData.insights
         }
         
+        // Extract reviews from text (for all content types)
+        let reviews = extractReviews(text: text)
+        
         // Extract metadata if available
         if let metadata = metadata {
             extractedMetadata = metadata
@@ -209,8 +240,97 @@ class AppleIntelligenceProcessor {
             structuredData: structuredData.isEmpty ? nil : structuredData,
             keyPoints: keyPoints.isEmpty ? nil : keyPoints,
             actionableInsights: actionableInsights.isEmpty ? nil : actionableInsights,
+            reviews: reviews.isEmpty ? nil : reviews,
             metadata: extractedMetadata.isEmpty ? nil : extractedMetadata
         )
+    }
+    
+    // MARK: - Review Extraction
+    
+    private func extractReviews(text: String) -> [String] {
+        var reviews: [String] = []
+        let lowerText = text.lowercased()
+        
+        // Look for review sections - common patterns
+        let reviewIndicators = [
+            "rezension", "review", "bewertung", "kundenbewertung", "kundenrezension",
+            "basierend auf rezensionen", "based on reviews", "customer review",
+            "sterne", "stars", "rating", "bewertet", "rated"
+        ]
+        
+        // Check if text contains review indicators
+        let hasReviewSection = reviewIndicators.contains { lowerText.contains($0) }
+        
+        if hasReviewSection {
+            // Split text into paragraphs
+            let paragraphs = text.components(separatedBy: "\n\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            
+            // Also try single newlines if paragraphs don't work
+            var allSections = paragraphs
+            if paragraphs.count < 3 {
+                allSections = text.components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && $0.count > 50 }
+            }
+            
+            // Look for review-like content
+            for section in allSections {
+                let lowerSection = section.lowercased()
+                let trimmed = section.trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                // Skip if too short or too long
+                guard trimmed.count > 50 && trimmed.count < 1000 else { continue }
+                
+                // Look for review patterns
+                let isReview = (
+                    // Contains review keywords
+                    reviewIndicators.contains(where: { lowerSection.contains($0) }) ||
+                    // Contains personal experience language
+                    lowerSection.contains("ich habe") || lowerSection.contains("i have") ||
+                    lowerSection.contains("ich bin") || lowerSection.contains("i am") ||
+                    lowerSection.contains("ich kann") || lowerSection.contains("i can") ||
+                    lowerSection.contains("meine") || lowerSection.contains("my ") ||
+                    // Contains rating language
+                    lowerSection.contains("sterne") || lowerSection.contains("stars") ||
+                    lowerSection.contains("empfehlung") || lowerSection.contains("recommend") ||
+                    // Contains satisfaction language
+                    lowerSection.contains("zufrieden") || lowerSection.contains("satisfied") ||
+                    lowerSection.contains("begeistert") || lowerSection.contains("excited") ||
+                    lowerSection.contains("traum") || lowerSection.contains("dream")
+                ) && (
+                    // Exclude if it's just a heading or navigation
+                    !lowerSection.contains("finden sie") &&
+                    !lowerSection.contains("find here") &&
+                    !lowerSection.contains("previous") &&
+                    !lowerSection.contains("next") &&
+                    !lowerSection.contains("zurück") &&
+                    !lowerSection.contains("weiter")
+                )
+                
+                if isReview {
+                    // Clean up the review text
+                    var cleanedReview = trimmed
+                    
+                    // Remove markdown links but keep text
+                    cleanedReview = cleanedReview.replacingOccurrences(of: #"\[([^\]]+)\]\([^\)]+\)"#, with: "$1", options: .regularExpression)
+                    
+                    // Remove excessive whitespace
+                    while cleanedReview.contains("  ") {
+                        cleanedReview = cleanedReview.replacingOccurrences(of: "  ", with: " ")
+                    }
+                    
+                    // Only add if it's substantial and not already in the list
+                    if cleanedReview.count > 50 && !reviews.contains(cleanedReview) {
+                        reviews.append(cleanedReview)
+                    }
+                }
+            }
+        }
+        
+        // Limit to top 10 reviews
+        return Array(reviews.prefix(10))
     }
     
     private func extractProductData(text: String, metadata: [String: AnyCodable]?) -> (structured: [String: AnyCodable], keyPoints: [String], insights: [String]) {
@@ -416,6 +536,90 @@ class AppleIntelligenceProcessor {
         return try generateEnhancedSummaries(text: text, contentType: contentType)
     }
     
+    @available(macOS 15.0, *)
+    private func generateWithAppleIntelligenceAndScoredSentences(text: String, contentType: ContentType) async throws -> (summaries: Summaries, scoredSentences: [(sentence: String, score: Double)]) {
+        // Use TF-IDF based summarization with content-aware strategies
+        return try generateEnhancedSummariesWithScoredSentences(text: text, contentType: contentType)
+    }
+    
+    private func generateEnhancedSummariesWithScoredSentences(text: String, contentType: ContentType) throws -> (summaries: Summaries, scoredSentences: [(sentence: String, score: Double)]) {
+        let sentences = extractSentences(text: text)
+        
+        guard !sentences.isEmpty else {
+            return (Summaries(short: text.prefix(150).description, detailed: text.prefix(400).description), [])
+        }
+        
+        // Score sentences using TF-IDF
+        let scoredSentences = scoreSentences(sentences: sentences, contentType: contentType)
+        
+        // Extract key points for bullet list
+        let keyPoints = extractKeyPointsForSummary(text: text, contentType: contentType, scoredSentences: scoredSentences)
+        
+        // Generate short summary (flowing narrative, ~150 words)
+        let shortSummary = buildFlowingSummary(
+            scoredSentences: scoredSentences,
+            targetWords: 150,
+            maxSentences: 5
+        )
+        
+        // Generate extensive detailed summary based on content type
+        let detailedSummary: String
+        switch contentType {
+        case .product:
+            // For products, create a very comprehensive summary with full descriptions
+            detailedSummary = buildExtensiveProductSummary(
+                text: text,
+                scoredSentences: scoredSentences,
+                keyPoints: keyPoints
+            )
+        case .article:
+            // For articles, include more content (1000+ words)
+            let narrativeSummary = buildFlowingSummary(
+                scoredSentences: scoredSentences,
+                targetWords: 1000,
+                maxSentences: 40
+            )
+            if !keyPoints.isEmpty {
+                let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
+                detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
+            } else {
+                detailedSummary = narrativeSummary
+            }
+        default:
+            // For other types, use moderate length (600 words)
+            let narrativeSummary = buildFlowingSummary(
+                scoredSentences: scoredSentences,
+                targetWords: 600,
+                maxSentences: 25
+            )
+            if !keyPoints.isEmpty {
+                let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
+                detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
+            } else {
+                detailedSummary = narrativeSummary
+            }
+        }
+        
+        return (Summaries(short: shortSummary, detailed: detailedSummary), scoredSentences)
+    }
+    
+    private func extractComprehensiveKeyPoints(
+        contentType: ContentType,
+        text: String,
+        scoredSentences: [(sentence: String, score: Double)]
+    ) -> [String] {
+        switch contentType {
+        case .product:
+            return extractProductKeyPoints(text: text, scoredSentences: scoredSentences)
+        case .article:
+            return extractArticleKeyPoints(text: text, scoredSentences: scoredSentences)
+        case .video:
+            return extractVideoKeyPoints(text: text, scoredSentences: scoredSentences)
+        case .listing, .general:
+            return extractGeneralKeyPoints(text: text, scoredSentences: scoredSentences)
+        }
+    }
+    
     private func generateEnhancedSummaries(text: String, contentType: ContentType) throws -> Summaries {
         let sentences = extractSentences(text: text)
         
@@ -436,19 +640,42 @@ class AppleIntelligenceProcessor {
             maxSentences: 5
         )
         
-        // Generate detailed summary (flowing narrative + key points)
-        let narrativeSummary = buildFlowingSummary(
-            scoredSentences: scoredSentences,
-            targetWords: 350,
-            maxSentences: 12
-        )
-        
+        // Generate extensive detailed summary based on content type
         let detailedSummary: String
-        if !keyPoints.isEmpty {
-            let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
-            detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
-        } else {
-            detailedSummary = narrativeSummary
+        switch contentType {
+        case .product:
+            // For products, create a very comprehensive summary with full descriptions
+            detailedSummary = buildExtensiveProductSummary(
+                text: text,
+            scoredSentences: scoredSentences,
+                keyPoints: keyPoints
+            )
+        case .article:
+            // For articles, include more content (1000+ words)
+            let narrativeSummary = buildFlowingSummary(
+                scoredSentences: scoredSentences,
+                targetWords: 1000,
+                maxSentences: 40
+            )
+            if !keyPoints.isEmpty {
+                let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
+                detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
+            } else {
+                detailedSummary = narrativeSummary
+            }
+        default:
+            // For other types, use moderate length (600 words)
+            let narrativeSummary = buildFlowingSummary(
+            scoredSentences: scoredSentences,
+                targetWords: 600,
+                maxSentences: 25
+            )
+            if !keyPoints.isEmpty {
+                let bulletPoints = keyPoints.map { "• \($0)" }.joined(separator: "\n")
+                detailedSummary = "\(narrativeSummary)\n\n\nKey Highlights:\n\(bulletPoints)"
+            } else {
+                detailedSummary = narrativeSummary
+            }
         }
         
         return Summaries(short: shortSummary, detailed: detailedSummary)
@@ -509,10 +736,28 @@ class AppleIntelligenceProcessor {
             
             switch contentType {
             case .product:
-                if lowerSentence.contains("price") || lowerSentence.contains("€") || lowerSentence.contains("$") {
+                // Prioritize descriptive content over technical specs
+                if lowerSentence.contains("beschreibung") || lowerSentence.contains("description") {
+                    score += 3.0
+                }
+                // Penalize price-only or spec-only sentences
+                if lowerSentence.range(of: #"^[\$€£¥]\s*[\d.,]+\s*$"#, options: .regularExpression) != nil {
+                    score -= 5.0 // Heavy penalty for price-only lines
+                }
+                // Penalize short spec lines (format: "Key: Value")
+                if sentence.contains(":") && sentence.count < 150 {
+                    let parts = sentence.components(separatedBy: ":")
+                    if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces).count < 30 {
+                        score -= 3.0 // Penalize spec lines
+                    }
+                }
+                // Bonus for descriptive language
+                let descriptiveWords = ["ist", "sind", "wird", "werden", "hat", "haben", "zeigt", "bietet", "garantiert", "gefertigt", "handgefertigt", "entworfen", "bekannt für", "gilt als"]
+                if descriptiveWords.contains(where: { lowerSentence.contains($0) }) {
                     score += 2.0
                 }
-                if lowerSentence.contains("feature") || lowerSentence.contains("specification") {
+                // Bonus for longer descriptive sentences
+                if sentence.count > 150 {
                     score += 1.5
                 }
                 
@@ -733,10 +978,10 @@ class AppleIntelligenceProcessor {
             }
         }
         
-        // Add top features
+        // Add top features (short, concise)
         points.append(contentsOf: features.prefix(5))
         
-        // Add key specifications (limit to most important)
+        // Add key specifications (limit to most important, keep concise)
         let importantSpecs = specs.filter { spec in
             let lowerSpec = spec.lowercased()
             return lowerSpec.contains("material") || lowerSpec.contains("finish") ||
@@ -744,36 +989,58 @@ class AppleIntelligenceProcessor {
                    lowerSpec.contains("radius") || lowerSpec.contains("breite") ||
                    lowerSpec.contains("width") || lowerSpec.contains("übersetzung") ||
                    lowerSpec.contains("ratio") || lowerSpec.contains("tonabnehmer") ||
-                   lowerSpec.contains("pickup")
+                   lowerSpec.contains("pickup") || lowerSpec.contains("korpus") ||
+                   lowerSpec.contains("hals") || lowerSpec.contains("griffbrett") ||
+                   lowerSpec.contains("sattel") || lowerSpec.contains("mechanik")
         }
-        points.append(contentsOf: importantSpecs.prefix(5))
+        points.append(contentsOf: importantSpecs.prefix(8))
         
-        // Extract key highlights from high-scoring sentences
-        for (sentence, score) in scoredSentences.prefix(20) {
+        // Extract concise key highlights (short phrases only, no long sentences)
+        for (sentence, score) in scoredSentences.prefix(30) {
             let lowerSentence = sentence.lowercased()
             // Look for sentences mentioning key features, materials, or special characteristics
-            if score > 2.5 && (
+            if score > 2.0 && (
                 lowerSentence.contains("hand") || lowerSentence.contains("custom") ||
                 lowerSentence.contains("premium") || lowerSentence.contains("vintage") ||
-                lowerSentence.contains("material") || lowerSentence.contains("finish") ||
-                lowerSentence.contains("feature") || lowerSentence.contains("specification") ||
-                lowerSentence.contains("golden era") || lowerSentence.contains("special edition") ||
-                lowerSentence.contains("limited") || lowerSentence.contains("exclusive")
+                lowerSentence.contains("special edition") || lowerSentence.contains("limited") ||
+                lowerSentence.contains("exclusive") || lowerSentence.contains("golden era")
             ) {
-                // Create concise key point from sentence
+                // Extract only the key phrase, not the full sentence
                 let cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Truncate very long sentences to key phrase
-                if cleaned.count > 120 {
-                    // Try to extract the key phrase
+                
+                // Create very concise key point (max 80 chars)
+                if cleaned.count <= 80 {
+                    if !points.contains(cleaned) {
+                        points.append(cleaned)
+                    }
+                } else {
+                    // Extract key phrase from longer sentence
                     let words = cleaned.components(separatedBy: .whitespaces)
-                    if words.count > 15 {
-                        let keyPhrase = words.prefix(15).joined(separator: " ") + "..."
-                        if !points.contains(keyPhrase) {
-                            points.append(keyPhrase)
+                    // Try to find the key phrase (usually at the start or contains keywords)
+                    var keyPhrase = ""
+                    for (index, word) in words.enumerated() {
+                        let lowerWord = word.lowercased()
+                        if lowerWord.contains("hand") || lowerWord.contains("custom") ||
+                           lowerWord.contains("premium") || lowerWord.contains("vintage") ||
+                           lowerWord.contains("special") || lowerWord.contains("limited") {
+                            // Take 8-12 words around this keyword
+                            let start = max(0, index - 2)
+                            let end = min(words.count, index + 10)
+                            let phraseWords = Array(words[start..<end])
+                            keyPhrase = phraseWords.joined(separator: " ")
+                            break
                         }
                     }
-                } else if cleaned.count > 20 && !points.contains(cleaned) {
-                    points.append(cleaned)
+                    
+                    // Fallback: take first 10 words
+                    if keyPhrase.isEmpty && words.count > 5 {
+                        keyPhrase = words.prefix(10).joined(separator: " ")
+                    }
+                    
+                    // Only add if it's concise and not already in list
+                    if !keyPhrase.isEmpty && keyPhrase.count <= 100 && !points.contains(keyPhrase) {
+                        points.append(keyPhrase)
+                    }
                 }
             }
         }
@@ -864,6 +1131,428 @@ class AppleIntelligenceProcessor {
         }
         
         return points
+    }
+    
+    private func buildExtensiveProductSummary(
+        text: String,
+        scoredSentences: [(sentence: String, score: Double)],
+        keyPoints: [String]
+    ) -> String {
+        // Build a comprehensive, flowing narrative summary ONLY from descriptive content
+        // This function specifically excludes specs, prices, and technical details
+        return buildNarrativeProductDescription(text: text)
+    }
+    
+    private func buildNarrativeProductDescription(text: String) -> String {
+        // Extract descriptive paragraphs from the text
+        // Split by double newlines first (paragraphs), then by single newlines
+        let paragraphs = text.components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        
+        // Also try splitting by single newlines if we don't have good paragraphs
+        var allParagraphs = paragraphs
+        if paragraphs.count < 5 {
+            let singleLineParagraphs = text.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count > 50 }
+            allParagraphs.append(contentsOf: singleLineParagraphs)
+        }
+        
+        // Filter to get ONLY descriptive paragraphs (exclude specs, prices, UI elements)
+        let descriptiveParagraphs = allParagraphs.filter { paragraph in
+            let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerParagraph = trimmed.lowercased()
+            
+            // Must be substantial
+            guard trimmed.count > 100 else { return false }
+            
+            // Exclude if it's mostly specs (has many colons with short keys)
+            let colonCount = trimmed.components(separatedBy: ":").count - 1
+            if colonCount > 2 {
+                // Check if keys before colons are short (likely specs)
+                let parts = trimmed.components(separatedBy: ":")
+                let shortKeys = parts.prefix(3).filter { part in
+                    let key = part.trimmingCharacters(in: .whitespaces)
+                    return key.count < 30 && key.count > 0
+                }
+                if shortKeys.count >= 2 {
+                    return false // Too many spec-like patterns
+                }
+            }
+            
+            // Exclude if it contains mostly prices
+            let pricePattern = #"[\$€£¥]\s*[\d.,]+"#
+            let priceMatches = trimmed.range(of: pricePattern, options: .regularExpression) != nil
+            if priceMatches && trimmed.count < 200 {
+                // If it's short and has a price, likely a price line
+                return false
+            }
+            
+            // Exclude UI/navigation elements
+            let uiKeywords = [
+                "anrede", "optional", "bitte geben", "frage stellen", "schreiben sie", "rufen sie",
+                "galerie anzeigen", "video anzeigen", "in den warenkorb", "artikel-nr", "serie-nr",
+                "sie haben fragen", "basierend auf rezensionen", "finden sie", "previous", "next",
+                "zurück", "weiter", "ab 0% finanzieren", "infos zur", "preise inkl", "versandkostenfrei",
+                "ab lager verfügbar", "mit * gekennzeichnete", "ich stimme zu"
+            ]
+            if uiKeywords.contains(where: { lowerParagraph.contains($0) }) {
+                return false
+            }
+            
+            // Exclude review sections (often start with "Nach" or contain review language)
+            if lowerParagraph.contains("rezension") || lowerParagraph.contains("review") {
+                if trimmed.count < 300 {
+                    return false // Short review mentions
+                }
+            }
+            
+            // Exclude specification sections
+            if lowerParagraph.contains("spezifikation") && trimmed.count < 500 {
+                return false
+            }
+            
+            // Must contain descriptive language (verbs, adjectives, narrative structure)
+            let descriptiveIndicators = [
+                "ist", "sind", "wird", "werden", "hat", "haben", "kann", "können",
+                "zeigt", "zeigt sich", "bietet", "garantiert", "ermöglicht", "zeichnet sich",
+                "gilt als", "bekannt für", "inspiriert", "gefertigt", "handgefertigt",
+                "hergestellt", "entworfen", "ausgestattet", "behandelt", "abgerichtet",
+                "präsentiert", "kombiniert", "verbindet", "erzeugt", "liefert", "schafft"
+            ]
+            let hasDescriptiveLanguage = descriptiveIndicators.contains(where: { lowerParagraph.contains($0) })
+            
+            // Must have narrative structure (multiple sentences, not just a list)
+            let sentenceCount = trimmed.components(separatedBy: CharacterSet(charactersIn: ".!?")).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+            let hasNarrativeStructure = sentenceCount >= 2 || trimmed.count > 200
+            
+            return hasDescriptiveLanguage && hasNarrativeStructure
+        }
+        
+        // If we have good descriptive paragraphs, use them
+        if descriptiveParagraphs.count >= 3 {
+            // Extract sentences from descriptive paragraphs
+            var allDescriptiveSentences: [String] = []
+            for paragraph in descriptiveParagraphs {
+                let sentences = extractSentences(text: paragraph)
+                // Filter sentences within paragraphs
+                let goodSentences = sentences.filter { sentence in
+                    let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmed.count > 30 && trimmed.count < 500 else { return false }
+                    
+                    // Exclude spec-like sentences
+                    if trimmed.contains(":") && trimmed.count < 150 {
+                        let parts = trimmed.components(separatedBy: ":")
+                        if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces).count < 30 {
+                            return false
+                        }
+                    }
+                    
+                    // Exclude price-only
+                    if trimmed.range(of: #"^[\$€£¥]\s*[\d.,]+\s*$"#, options: .regularExpression) != nil {
+                        return false
+                    }
+                    
+                    return true
+                }
+                allDescriptiveSentences.append(contentsOf: goodSentences)
+            }
+            
+            // Create narrative paragraphs from descriptive sentences
+            return createNarrativeParagraphs(from: allDescriptiveSentences)
+        }
+        
+        // Fallback: extract sentences from full text and filter heavily
+        let allSentences = extractSentences(text: text)
+        let narrativeSentences = allSentences.filter { sentence in
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerSentence = trimmed.lowercased()
+            
+            guard trimmed.count > 50 && trimmed.count < 600 else { return false }
+            
+            // Exclude specs
+            if trimmed.contains(":") && trimmed.count < 150 {
+                let parts = trimmed.components(separatedBy: ":")
+                if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces).count < 30 {
+                    return false
+                }
+            }
+            
+            // Exclude prices, UI, measurements
+            if trimmed.range(of: #"^[\$€£¥]\s*[\d.,]+\s*$"#, options: .regularExpression) != nil {
+                return false
+            }
+            
+            let uiKeywords = ["anrede", "optional", "artikel-nr", "serie-nr", "galerie anzeigen"]
+            if uiKeywords.contains(where: { lowerSentence.contains($0) }) {
+                return false
+            }
+            
+            // Must have descriptive language
+            let descriptiveWords = ["ist", "sind", "wird", "werden", "hat", "haben", "zeigt", "bietet", "gefertigt"]
+            return descriptiveWords.contains(where: { lowerSentence.contains($0) }) || trimmed.count > 150
+        }
+        
+        if narrativeSentences.count >= 10 {
+            return createNarrativeParagraphs(from: Array(narrativeSentences.prefix(100)))
+        }
+        
+        // Last resort: return empty or minimal summary
+        return "Detailed product description is being processed."
+    }
+    
+    private func buildFlowingNarrativeSummary(
+        text: String,
+        scoredSentences: [(sentence: String, score: Double)],
+        targetWords: Int,
+        maxSentences: Int
+    ) -> String {
+        // Extract all sentences from the text (handles both paragraph-separated and concatenated text)
+        let allSentences = extractSentences(text: text)
+        
+        // Filter out noise: specs, prices, UI elements, reviews, navigation
+        let filteredSentences = allSentences.filter { sentence in
+            let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerSentence = trimmed.lowercased()
+            
+            // Must be substantial
+            guard trimmed.count > 30 && trimmed.count < 600 else { return false }
+            
+            // Filter out technical specs (lines with colons and short keys, measurement units)
+            if trimmed.contains(":") && trimmed.count < 150 {
+                let parts = trimmed.components(separatedBy: ":")
+                if parts.count == 2 {
+                    let key = parts[0].trimmingCharacters(in: .whitespaces)
+                    // If key is very short, it's likely a spec line
+                    if key.count < 30 {
+                        return false
+                    }
+                }
+            }
+            
+            // Filter out measurement-only lines
+            if trimmed.range(of: #"^\d+[\.\d]*\s*["']"#, options: .regularExpression) != nil {
+                return false
+            }
+            
+            // Filter out price-only lines
+            if trimmed.range(of: #"^[\$€£¥]\s*[\d.,]+\s*$"#, options: .regularExpression) != nil {
+                return false
+            }
+            
+            // Filter out UI/navigation elements
+            let uiKeywords = ["anrede", "optional", "bitte geben", "frage stellen", "schreiben sie", "rufen sie", "galerie anzeigen", "video anzeigen", "in den warenkorb", "artikel-nr", "serie-nr", "sie haben fragen", "basierend auf rezensionen", "finden sie", "previous", "next", "zurück", "weiter"]
+            if uiKeywords.contains(where: { lowerSentence.contains($0) }) {
+                return false
+            }
+            
+            // Filter out review fragments (very short review snippets)
+            if lowerSentence.hasPrefix("nach ") && trimmed.count < 100 {
+                return false
+            }
+            
+            // Filter out standalone numbers or very short fragments
+            if trimmed.components(separatedBy: .whitespaces).count < 5 {
+                return false
+            }
+            
+            // Prioritize descriptive content: look for sentences with descriptive language
+            let descriptiveIndicators = ["ist", "sind", "wird", "werden", "hat", "haben", "kann", "können", "zeigt", "zeigt sich", "bietet", "garantiert", "ermöglicht", "zeichnet sich", "gilt als", "bekannt für", "inspiriert", "gefertigt", "handgefertigt", "hergestellt", "entworfen", "ausgestattet", "behandelt", "abgerichtet"]
+            let hasDescriptiveLanguage = descriptiveIndicators.contains(where: { lowerSentence.contains($0) })
+            
+            // Prioritize longer, more descriptive sentences
+            let isDescriptive = hasDescriptiveLanguage || trimmed.count > 100
+            
+            return isDescriptive
+        }
+        
+        // If we have good filtered sentences, prioritize them; otherwise use scored sentences
+        let sentencesToUse: [String]
+        if filteredSentences.count > 30 {
+            // Use filtered sentences, prioritizing longer ones
+            sentencesToUse = filteredSentences.sorted { $0.count > $1.count }
+        } else {
+            // Fall back to scored sentences, but filter out noise
+            let scoredFiltered = scoredSentences.map { $0.sentence }.filter { sentence in
+                let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                let lowerSentence = trimmed.lowercased()
+                
+                guard trimmed.count > 30 && trimmed.count < 600 else { return false }
+                
+                // Filter out specs, prices, UI elements
+                if trimmed.contains(":") && trimmed.count < 150 {
+                    let parts = trimmed.components(separatedBy: ":")
+                    if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces).count < 30 {
+                        return false
+                    }
+                }
+                
+                let uiKeywords = ["anrede", "optional", "bitte geben", "artikel-nr", "serie-nr", "galerie anzeigen"]
+                if uiKeywords.contains(where: { lowerSentence.contains($0) }) {
+                    return false
+                }
+                
+                return true
+            }
+            sentencesToUse = scoredFiltered
+        }
+        
+        var selectedSentences: [String] = []
+        var wordCount = 0
+        
+        // Select sentences up to target word count, prioritizing longer descriptive ones
+        for sentence in sentencesToUse {
+            let words = sentence.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            
+            // Skip if adding this would exceed target
+            if wordCount + words.count > targetWords && selectedSentences.count >= 30 {
+                break
+            }
+            
+            // Add sentence if we haven't exceeded limits
+            if selectedSentences.count < maxSentences {
+                selectedSentences.append(sentence)
+                wordCount += words.count
+            } else {
+                break
+            }
+        }
+        
+        if selectedSentences.isEmpty && !sentencesToUse.isEmpty {
+            // Fallback: use first substantial sentences
+            let firstSentences = sentencesToUse.prefix(min(30, maxSentences))
+            selectedSentences = Array(firstSentences)
+        }
+        
+        // Group sentences into coherent paragraphs with proper structure
+        return createNarrativeParagraphs(from: selectedSentences)
+    }
+    
+    private func createNarrativeParagraphs(from sentences: [String]) -> String {
+        guard !sentences.isEmpty else { return "" }
+        
+        var paragraphs: [String] = []
+        var currentParagraph: [String] = []
+        var currentWordCount = 0
+        let targetWordsPerParagraph = 150 // Aim for ~150 words per paragraph
+        
+        for sentence in sentences {
+            let words = sentence.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            let sentenceWordCount = words.count
+            
+            // If adding this sentence would exceed paragraph target, start new paragraph
+            if currentWordCount > 0 && currentWordCount + sentenceWordCount > targetWordsPerParagraph && currentParagraph.count >= 3 {
+                // Finalize current paragraph
+                let paragraph = createFlowingParagraph(from: currentParagraph)
+                paragraphs.append(paragraph)
+                currentParagraph = []
+                currentWordCount = 0
+            }
+            
+            currentParagraph.append(sentence)
+            currentWordCount += sentenceWordCount
+        }
+        
+        // Add final paragraph
+        if !currentParagraph.isEmpty {
+            let paragraph = createFlowingParagraph(from: currentParagraph)
+            paragraphs.append(paragraph)
+        }
+        
+        // Join paragraphs with double newlines
+        return paragraphs.joined(separator: "\n\n")
+    }
+    
+    private func createFlowingParagraph(from sentences: [String]) -> String {
+        guard !sentences.isEmpty else { return "" }
+        
+        var flowingSentences: [String] = []
+        
+        for (index, sentence) in sentences.enumerated() {
+            var cleaned = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Skip if too short or looks like noise
+            if cleaned.count < 20 {
+                continue
+            }
+            
+            // Remove redundant sentence starters if not first sentence
+            if index > 0 {
+                // Remove common redundant phrases at the start (both English and German)
+                let redundantStarters = [
+                    "This ", "The ", "It ", "That ", "These ", "Those ",
+                    "In addition, ", "Furthermore, ", "Moreover, ",
+                    "Additionally, ", "Also, ", "Plus, ", "And ", "But ",
+                    "Die ", "Der ", "Das ", "Diese ", "Dieser ", "Und ", "Aber "
+                ]
+                for starter in redundantStarters {
+                    if cleaned.hasPrefix(starter) {
+                        cleaned = String(cleaned.dropFirst(starter.count))
+                        break
+                    }
+                }
+            }
+            
+            // Clean up markdown links and formatting
+            cleaned = cleaned.replacingOccurrences(of: #"\[([^\]]+)\]\([^\)]+\)"#, with: "$1", options: .regularExpression)
+            cleaned = cleaned.replacingOccurrences(of: #"\*\*([^\*]+)\*\*"#, with: "$1", options: .regularExpression)
+            cleaned = cleaned.replacingOccurrences(of: #"\*([^\*]+)\*"#, with: "$1", options: .regularExpression)
+            
+            // Remove standalone bullet points and dashes at start
+            if cleaned.hasPrefix("- ") || cleaned.hasPrefix("• ") || cleaned.hasPrefix("* ") {
+                cleaned = String(cleaned.dropFirst(2))
+            }
+            
+            // Remove leading/trailing quotes if they wrap the whole sentence
+            if cleaned.hasPrefix("\"") && cleaned.hasSuffix("\"") && cleaned.count > 2 {
+                cleaned = String(cleaned.dropFirst().dropLast())
+            }
+            
+            // Ensure sentence ends with punctuation
+            if !cleaned.isEmpty {
+                let lastChar = cleaned.suffix(1)
+                if lastChar != "." && lastChar != "!" && lastChar != "?" && lastChar != ":" {
+                    cleaned += "."
+                }
+                
+                // Capitalize first letter (handle German umlauts and special chars)
+                if !cleaned.isEmpty {
+                    let firstChar = String(cleaned.prefix(1))
+                    let rest = cleaned.dropFirst()
+                    let capitalized = firstChar.uppercased() + rest
+                    cleaned = capitalized
+                }
+                
+                flowingSentences.append(cleaned)
+            }
+        }
+        
+        if flowingSentences.isEmpty {
+            return ""
+        }
+        
+        // Join sentences with proper spacing
+        var flowingText = flowingSentences.joined(separator: " ")
+        
+        // Clean up multiple spaces and fix spacing around punctuation
+        flowingText = flowingText.replacingOccurrences(of: "  ", with: " ")
+        flowingText = flowingText.replacingOccurrences(of: " .", with: ".")
+        flowingText = flowingText.replacingOccurrences(of: " ,", with: ",")
+        flowingText = flowingText.replacingOccurrences(of: " :", with: ":")
+        flowingText = flowingText.replacingOccurrences(of: " ;", with: ";")
+        flowingText = flowingText.replacingOccurrences(of: "„", with: "\"")
+        flowingText = flowingText.replacingOccurrences(of: "''", with: "\"")
+        
+        // Ensure proper capitalization of first letter
+        if !flowingText.isEmpty {
+            let firstChar = String(flowingText.prefix(1))
+            let rest = flowingText.dropFirst()
+            let capitalized = firstChar.uppercased() + rest
+            flowingText = capitalized
+        }
+        
+        return flowingText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     private func log(_ value: Double) -> Double {

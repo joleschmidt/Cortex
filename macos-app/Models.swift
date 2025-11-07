@@ -108,6 +108,7 @@ struct ExtractedData: Codable {
     let structuredData: [String: AnyCodable]?
     let keyPoints: [String]?
     let actionableInsights: [String]?
+    let reviews: [String]?
     let metadata: [String: AnyCodable]?
     
     enum CodingKeys: String, CodingKey {
@@ -115,14 +116,16 @@ struct ExtractedData: Codable {
         case structuredData = "structured_data"
         case keyPoints = "key_points"
         case actionableInsights = "actionable_insights"
+        case reviews
         case metadata
     }
     
-    init(type: String, structuredData: [String: AnyCodable]?, keyPoints: [String]?, actionableInsights: [String]?, metadata: [String: AnyCodable]?) {
+    init(type: String, structuredData: [String: AnyCodable]?, keyPoints: [String]?, actionableInsights: [String]?, reviews: [String]?, metadata: [String: AnyCodable]?) {
         self.type = type
         self.structuredData = structuredData
         self.keyPoints = keyPoints
         self.actionableInsights = actionableInsights
+        self.reviews = reviews
         self.metadata = metadata
     }
     
@@ -132,6 +135,7 @@ struct ExtractedData: Codable {
         structuredData = try container.decodeIfPresent([String: AnyCodable].self, forKey: .structuredData)
         keyPoints = try container.decodeIfPresent([String].self, forKey: .keyPoints)
         actionableInsights = try container.decodeIfPresent([String].self, forKey: .actionableInsights)
+        reviews = try container.decodeIfPresent([String].self, forKey: .reviews)
         
         if container.contains(.metadata) {
             if let metadataDict = try? container.decode([String: AnyCodable].self, forKey: .metadata) {
@@ -150,6 +154,7 @@ struct ExtractedData: Codable {
         try container.encodeIfPresent(structuredData, forKey: .structuredData)
         try container.encodeIfPresent(keyPoints, forKey: .keyPoints)
         try container.encodeIfPresent(actionableInsights, forKey: .actionableInsights)
+        try container.encodeIfPresent(reviews, forKey: .reviews)
         try container.encodeIfPresent(metadata, forKey: .metadata)
     }
 }
@@ -161,6 +166,8 @@ struct Summary: Codable, Identifiable {
     let shortSummary: String
     let detailedSummary: String
     let extractedData: ExtractedData?
+    let keyPoints: [String]?
+    let reviews: [String]?
     let createdAt: Date
     
     enum CodingKeys: String, CodingKey {
@@ -169,6 +176,8 @@ struct Summary: Codable, Identifiable {
         case shortSummary = "short_summary"
         case detailedSummary = "detailed_summary"
         case extractedData = "extracted_data"
+        case keyPoints = "key_points"
+        case reviews
         case createdAt = "created_at"
     }
 }
