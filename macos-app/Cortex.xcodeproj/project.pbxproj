@@ -13,6 +13,7 @@
 		AA000007 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000008 /* Models.swift */; };
 		AA000009 /* SupabaseManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000A /* SupabaseManager.swift */; };
 		AA00000B /* AppleIntelligenceProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000C /* AppleIntelligenceProcessor.swift */; };
+		AA00000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA00000E /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -23,6 +24,7 @@
 		AA000008 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		AA00000A /* SupabaseManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseManager.swift; sourceTree = "<group>"; };
 		AA00000C /* AppleIntelligenceProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleIntelligenceProcessor.swift; sourceTree = "<group>"; };
+		AA00000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -37,12 +39,14 @@
 		AA000013 /* Cortex */ = {
 			isa = PBXGroup;
 			children = (
+				AA00000E /* Assets.xcassets */,
 				AA000002 /* CortexApp.swift */,
 				AA000004 /* ContentView.swift */,
 				AA000006 /* SettingsView.swift */,
 				AA000008 /* Models.swift */,
 				AA00000A /* SupabaseManager.swift */,
 				AA00000C /* AppleIntelligenceProcessor.swift */,
+				AA00000E /* Assets.xcassets */,
 			);
 			path = .;
 			sourceTree = "<group>";
@@ -63,6 +67,7 @@
 			buildConfigurationList = AA000015 /* Build configuration list for PBXNativeTarget "Cortex" */;
 			buildPhases = (
 				AA000016 /* Sources */,
+				AA00000F /* Resources */,
 			);
 			buildRules = (
 			);
@@ -116,6 +121,17 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA00000F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA00000D /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
 		AA000019 /* Debug */ = {

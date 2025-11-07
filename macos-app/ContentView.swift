@@ -141,6 +141,10 @@ struct ContentView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+                    .environmentObject(supabaseManager)
+            }
             } else {
             HSplitView {
                 // Sidebar
@@ -936,7 +940,7 @@ struct DetailView: View {
                         print("❌ Error updating content type: \(error)")
                         updateErrors.append("Failed to update content type: \(error.localizedDescription)")
                     }
-            } else {
+                } else {
                     // Content type was set to nil - we might need a special API call for this
                     print("⚠️ Content type set to nil - this might not be supported")
                 }
@@ -1024,16 +1028,16 @@ struct StructuredDataView: View {
                 .font(.headline)
             
             if let structuredData = extractedData.structuredData, !structuredData.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(structuredData.keys.sorted()), id: \.self) { key in
                         HStack(alignment: .top) {
                             Text("\(key.capitalized):")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                             Spacer()
                             Text(formatValue(structuredData[key]?.value))
                                 .font(.caption)
-                    .foregroundColor(.primary)
+                                .foregroundColor(.primary)
                         }
                     }
                 }
@@ -1059,7 +1063,7 @@ struct StructuredDataView: View {
             }
             
             if let insights = extractedData.actionableInsights, !insights.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Actionable Insights")
                         .font(.subheadline)
                         .fontWeight(.semibold)
@@ -1068,7 +1072,7 @@ struct StructuredDataView: View {
                             Text("→")
                                 .foregroundColor(.blue)
                             Text(insight)
-                    .font(.caption)
+                                .font(.caption)
                         }
                     }
                 }
